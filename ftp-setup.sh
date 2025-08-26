@@ -1113,6 +1113,46 @@ install_brce_ftp() {
     log_step_start "实时同步服务启动"
     if start_sync_service; then
         log_info "实时同步服务启动成功"
+        
+        # 执行初始手动同步，确保FTP用户能看到源目录现有文件
+        log_step_start "初始文件同步"
+        echo "🔄 正在同步源目录现有文件到FTP目录..."
+        echo "   源目录: $SOURCE_DIR"
+        echo "   FTP目录: $ftp_home"
+        
+        # 等待同步服务完全启动
+        sleep 3
+        
+        # 检查同步是否正常工作
+        if systemctl is-active --quiet brce-ftp-sync; then
+            echo "   ✅ 同步服务已启动，初始同步将自动执行"
+            
+            # 手动触发一次同步，确保现有文件立即可见
+            if [[ -d "$SOURCE_DIR" && "$(ls -A "$SOURCE_DIR" 2>/dev/null)" ]]; then
+                echo "   📁 检测到源目录有文件，正在执行初始同步..."
+                
+                # 直接执行rsync同步，确保FTP用户能立即看到文件
+                if rsync -av --exclude='.*' "$SOURCE_DIR/" "$ftp_home/" 2>/dev/null; then
+                    # 设置正确权限
+                    chown -R "$FTP_USER:$FTP_USER" "$ftp_home" 2>/dev/null || true
+                    find "$ftp_home" -type f -exec chmod 644 {} \; 2>/dev/null || true
+                    find "$ftp_home" -type d -exec chmod 755 {} \; 2>/dev/null || true
+                    
+                    echo "   ✅ 初始同步完成，FTP用户现在可以看到所有现有文件"
+                    
+                    # 显示同步的文件数量
+                    local file_count=$(find "$ftp_home" -type f 2>/dev/null | wc -l)
+                    echo "   📊 已同步 $file_count 个文件"
+                else
+                    echo "   ⚠️  初始同步失败，但实时同步仍然工作"
+                fi
+            else
+                echo "   📭 源目录为空，无需初始同步"
+            fi
+        else
+            echo "   ⚠️  同步服务未正常启动"
+        fi
+        log_step_end "初始文件同步"
     else
         log_warn "实时同步服务启动失败，但安装将继续"
         echo "⚠️  实时同步服务启动失败，您可以稍后手动启动："
@@ -1558,6 +1598,33 @@ add_ftp_user() {
     # 重启服务
     systemctl restart vsftpd 2>/dev/null || true
     systemctl restart brce-ftp-sync 2>/dev/null || true
+    
+    # 执行初始同步，确保新用户能看到源目录现有文件
+    echo ""
+    echo "🔄 正在同步源目录现有文件..."
+    sleep 2  # 等待服务重启
+    
+    if [[ -d "$user_source_dir" && "$(ls -A "$user_source_dir" 2>/dev/null)" ]]; then
+        echo "📁 检测到源目录有文件，正在执行初始同步..."
+        
+        # 执行rsync同步
+        if rsync -av --exclude='.*' "$user_source_dir/" "$ftp_home/" 2>/dev/null; then
+            # 设置正确权限
+            chown -R "$new_username:$new_username" "$ftp_home" 2>/dev/null || true
+            find "$ftp_home" -type f -exec chmod 644 {} \; 2>/dev/null || true
+            find "$ftp_home" -type d -exec chmod 755 {} \; 2>/dev/null || true
+            
+            echo "✅ 初始同步完成，用户现在可以看到所有现有文件"
+            
+            # 显示同步的文件数量
+            local file_count=$(find "$ftp_home" -type f 2>/dev/null | wc -l)
+            echo "📊 已同步 $file_count 个文件"
+        else
+            echo "⚠️  初始同步失败，但实时同步仍然工作"
+        fi
+    else
+        echo "📭 源目录为空，无需初始同步"
+    fi
     
     echo ""
     echo "🎉 ======================================================"
