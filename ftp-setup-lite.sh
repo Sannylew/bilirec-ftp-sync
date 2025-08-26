@@ -133,7 +133,7 @@ EOF
 }
 
 # 创建FTP用户 - 简化版
-create_ftp_user() {bei
+create_ftp_user() {
     local username="$1"
     local password="$2"
     local recording_dir="$3"
@@ -982,38 +982,19 @@ update_script() {
     echo "🔄 $SCRIPT_NAME 在线更新"
     echo "======================================================"
     echo ""
-    echo "请选择更新方式："
-    echo "1) 🔍 检查更新 (智能更新)"
-    echo "2) ⚡ 强制更新 (直接覆盖)"
-    echo "0) ⬅️ 返回主菜单"
+    echo "⚠️ 在线更新功能暂时不可用"
     echo ""
-    echo "💡 说明："
-    echo "   • 智能更新: 比较版本和内容，仅在有差异时更新"
-    echo "   • 强制更新: 无条件从GitHub获取最新代码"
+    echo "📋 当前情况："
+    echo "   • 您使用的是最新的 v1.1.0-lite 版本"
+    echo "   • 已移除备份功能，更简洁高效"
+    echo "   • GitHub仓库版本尚未同步"
     echo ""
-    read -p "请输入选项 (0-2): " update_choice
-    
-    case $update_choice in
-        1)
-            perform_smart_update
-            echo ""
-            read -p "按回车键返回主菜单..." -r
-            ;;
-        2)
-            perform_force_update
-            echo ""
-            read -p "按回车键返回主菜单..." -r
-            ;;
-        0)
-            return 0
-            ;;
-        *)
-            echo ""
-            echo "❌ 无效选项！请输入 0-2 之间的数字"
-            sleep 2
-            update_script
-            ;;
-    esac
+    echo "💡 建议："
+    echo "   • 当前版本功能完整，可正常使用"
+    echo "   • 如需更新，请等待GitHub版本同步"
+    echo ""
+    read -p "按回车键返回主菜单..." -r
+    return 0
 }
 
 # 智能更新功能
@@ -1030,7 +1011,6 @@ perform_smart_update() {
     echo "📋 更新信息："
     echo "   - 当前脚本: $CURRENT_SCRIPT"
     echo "   - 远程仓库: https://github.com/Sannylew/bilirec-ftp-sync"
-    echo "   - 备份位置: $BACKUP_SCRIPT"
     echo ""
     
     # 检查网络连接
@@ -1143,7 +1123,6 @@ perform_force_update() {
     echo "📋 强制更新信息："
     echo "   - 当前脚本: $CURRENT_SCRIPT"
     echo "   - 远程地址: $SCRIPT_URL"
-    echo "   - 备份位置: $BACKUP_SCRIPT"
     echo ""
     
     # 检查网络连接
