@@ -14,7 +14,7 @@ readonly LOG_FILE="/var/log/brce_ftp_setup.log"
 SOURCE_DIR=""
 FTP_USER=""
 
-# 日志函数
+# 增强的日志函数
 log_info() {
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] INFO: $*" | tee -a "$LOG_FILE"
 }
@@ -23,10 +23,43 @@ log_error() {
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] ERROR: $*" | tee -a "$LOG_FILE" >&2
 }
 
+log_warn() {
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] WARN: $*" | tee -a "$LOG_FILE"
+}
+
 log_debug() {
     if [[ "${DEBUG:-0}" == "1" ]]; then
         echo "[$(date '+%Y-%m-%d %H:%M:%S')] DEBUG: $*" | tee -a "$LOG_FILE"
     fi
+}
+
+# 记录命令执行结果的函数
+log_command() {
+    local cmd="$1"
+    local description="${2:-执行命令}"
+    
+    log_info "$description: $cmd"
+    
+    if eval "$cmd" 2>&1 | tee -a "$LOG_FILE"; then
+        log_info "$description 成功"
+        return 0
+    else
+        local exit_code=$?
+        log_error "$description 失败 (退出码: $exit_code)"
+        return $exit_code
+    fi
+}
+
+# 记录步骤开始和结束的函数
+log_step_start() {
+    echo "" | tee -a "$LOG_FILE"
+    echo "=== $* ===" | tee -a "$LOG_FILE"
+    log_info "开始步骤: $*"
+}
+
+log_step_end() {
+    log_info "完成步骤: $*"
+    echo "===========================================" | tee -a "$LOG_FILE"
 }
 
 # 重试机制函数
@@ -116,13 +149,29 @@ init_script() {
     if ! mkdir -p "$(dirname "$LOG_FILE")" 2>/dev/null; then
         echo "警告: 无法创建日志目录，将仅输出到终端"
         LOG_FILE="/dev/null"
+    else
+        echo "📝 日志文件: $LOG_FILE"
     fi
+
+    # 记录脚本启动信息
+    log_step_start "脚本初始化"
+    log_info "BRCE FTP服务配置工具启动 - 版本 $SCRIPT_VERSION"
+    log_info "执行用户: $(whoami)"
+    log_info "当前时间: $(date)"
+    log_info "系统信息: $(uname -a)"
+    log_info "工作目录: $(pwd)"
+    log_info "脚本路径: $0"
+    log_info "日志文件: $LOG_FILE"
 
     # 检查权限
     if [[ $EUID -ne 0 ]]; then
         log_error "此脚本需要root权限，请使用 sudo 运行"
+        log_error "当前用户UID: $EUID (需要UID: 0)"
         cleanup_and_exit 1
     fi
+    
+    log_info "权限检查通过 - 以root用户运行"
+    log_step_end "脚本初始化"
 }
 
 # 统一的用户名验证函数
@@ -881,39 +930,62 @@ install_brce_ftp() {
     fi
     
     echo ""
+    log_step_start "FTP服务安装部署"
     log_info "开始部署..."
+    log_info "用户: $FTP_USER"
+    log_info "源目录: $SOURCE_DIR"
+    log_info "密码类型: ${auto_pwd:-手动设置}"
     
     # 安装vsftpd和实时同步依赖
-    log_info "安装软件包..."
+    log_step_start "软件包安装"
+    log_info "检测包管理器..."
     if command -v apt-get &> /dev/null; then
-        apt-get update -qq
-        apt-get install -y vsftpd rsync inotify-tools
+        log_info "使用 apt-get 包管理器"
+        log_command "apt-get update -qq" "更新软件包列表"
+        log_command "apt-get install -y vsftpd rsync inotify-tools" "安装必需软件包"
     elif command -v yum &> /dev/null; then
-        yum install -y vsftpd rsync inotify-tools
+        log_info "使用 yum 包管理器"
+        log_command "yum install -y vsftpd rsync inotify-tools" "安装必需软件包"
+    elif command -v dnf &> /dev/null; then
+        log_info "使用 dnf 包管理器"
+        log_command "dnf install -y vsftpd rsync inotify-tools" "安装必需软件包"
     else
-        log_error "不支持的包管理器"
+        log_error "不支持的包管理器，请手动安装: vsftpd rsync inotify-tools"
         exit 1
     fi
+    log_step_end "软件包安装"
     
     # 检查实时同步依赖
     check_sync_dependencies
     
-    # 创建用户（基于主程序逻辑）
-    echo "👤 配置用户..."
+        # 创建用户（基于主程序逻辑）
+    log_step_start "用户配置"
+    log_info "配置FTP用户: $FTP_USER"
     if id -u "$FTP_USER" &>/dev/null; then
-        echo "⚠️  用户已存在，重置密码"
+        log_warn "用户已存在，将重置密码"
+        log_info "现有用户信息: $(id "$FTP_USER")"
     else
+        log_info "创建新用户: $FTP_USER"
         if command -v adduser &> /dev/null; then
-            adduser "$FTP_USER" --disabled-password --gecos ""
+            log_command "adduser \"$FTP_USER\" --disabled-password --gecos \"\"" "使用adduser创建用户"
         else
-            useradd -m -s /bin/bash "$FTP_USER"
+            log_command "useradd -m -s /bin/bash \"$FTP_USER\"" "使用useradd创建用户"
         fi
+        log_info "用户创建成功: $(id "$FTP_USER")"
     fi
+    
     # 安全设置用户密码（避免密码在进程列表中暴露）
+    log_info "设置用户密码 (密码已隐藏)"
     # 保存密码用于显示
     display_password="$ftp_pass"
-    chpasswd <<< "$FTP_USER:$ftp_pass"
+    if echo "$FTP_USER:$ftp_pass" | chpasswd; then
+        log_info "用户密码设置成功"
+    else
+        log_error "用户密码设置失败"
+        return 1
+    fi
     unset ftp_pass  # 立即清除密码变量
+    log_step_end "用户配置"
     
     # 处理录播姬路径权限问题
     setup_brec_root_permissions "$FTP_USER" "$SOURCE_DIR"
@@ -1452,6 +1524,144 @@ delete_ftp_user() {
         log_error "用户删除失败"
         return 1
     fi
+}
+
+# 日志查看和管理功能
+view_logs() {
+    while true; do
+        clear
+        echo "======================================================"
+        echo "📋 BRCE FTP 日志查看器"
+        echo "======================================================"
+        echo ""
+        echo "请选择查看的日志："
+        echo "1) 📄 安装配置日志 (setup.log)"
+        echo "2) 🔄 实时同步日志 (sync.log)"
+        echo "3) 🌐 FTP服务日志 (vsftpd.log)"
+        echo "4) 📊 系统服务日志 (systemd)"
+        echo "5) 🔍 搜索日志内容"
+        echo "6) 🗑️ 清理旧日志"
+        echo "0) ⬅️ 返回主菜单"
+        echo ""
+            echo "📝 日志文件位置："
+    echo "   • 主日志: $LOG_FILE"
+    echo "   • 同步日志: /var/log/brce_sync.log"
+    echo "   • FTP日志: /var/log/vsftpd.log"
+    echo ""
+    echo "💡 提示: 设置 DEBUG=1 启用详细调试日志"
+    echo "   使用方法: DEBUG=1 sudo ./$(basename "$0")"
+        echo ""
+        read -p "请输入选项 (0-6): " log_choice
+        
+        case $log_choice in
+            1)
+                echo ""
+                echo "📄 查看安装配置日志 (最近100行):"
+                echo "======================================================"
+                if [[ -f "$LOG_FILE" ]]; then
+                    tail -n 100 "$LOG_FILE" | cat
+                else
+                    echo "⚠️ 安装配置日志文件不存在: $LOG_FILE"
+                fi
+                echo ""
+                read -p "按回车键继续..." -r
+                ;;
+            2)
+                echo ""
+                echo "🔄 查看实时同步日志 (最近100行):"
+                echo "======================================================"
+                if [[ -f "/var/log/brce_sync.log" ]]; then
+                    tail -n 100 /var/log/brce_sync.log | cat
+                else
+                    echo "⚠️ 同步日志文件不存在: /var/log/brce_sync.log"
+                fi
+                echo ""
+                read -p "按回车键继续..." -r
+                ;;
+            3)
+                echo ""
+                echo "🌐 查看FTP服务日志 (最近50行):"
+                echo "======================================================"
+                if [[ -f "/var/log/vsftpd.log" ]]; then
+                    tail -n 50 /var/log/vsftpd.log | cat
+                else
+                    echo "⚠️ FTP日志文件不存在: /var/log/vsftpd.log"
+                fi
+                echo ""
+                read -p "按回车键继续..." -r
+                ;;
+            4)
+                echo ""
+                echo "📊 查看系统服务日志 (最近50行):"
+                echo "======================================================"
+                echo "🔸 BRCE FTP同步服务日志:"
+                journalctl -u brce-ftp-sync --no-pager -n 25 2>/dev/null || echo "同步服务日志不可用"
+                echo ""
+                echo "🔸 vsftpd服务日志:"
+                journalctl -u vsftpd --no-pager -n 25 2>/dev/null || echo "vsftpd服务日志不可用"
+                echo ""
+                read -p "按回车键继续..." -r
+                ;;
+            5)
+                echo ""
+                read -p "请输入要搜索的关键词: " search_term
+                if [[ -n "$search_term" ]]; then
+                    echo ""
+                    echo "🔍 搜索结果 (关键词: $search_term):"
+                    echo "======================================================"
+                    echo "📄 安装配置日志中的匹配:"
+                    [[ -f "$LOG_FILE" ]] && grep -i "$search_term" "$LOG_FILE" 2>/dev/null || echo "未找到匹配项"
+                    echo ""
+                    echo "🔄 同步日志中的匹配:"
+                    [[ -f "/var/log/brce_sync.log" ]] && grep -i "$search_term" /var/log/brce_sync.log 2>/dev/null || echo "未找到匹配项"
+                    echo ""
+                    echo "🌐 FTP日志中的匹配:"
+                    [[ -f "/var/log/vsftpd.log" ]] && grep -i "$search_term" /var/log/vsftpd.log 2>/dev/null || echo "未找到匹配项"
+                else
+                    echo "⚠️ 请输入搜索关键词"
+                fi
+                echo ""
+                read -p "按回车键继续..." -r
+                ;;
+            6)
+                echo ""
+                echo "🗑️ 清理旧日志文件:"
+                echo "======================================================"
+                echo "这将清理以下日志文件的旧内容 (保留最近1000行):"
+                echo "  • $LOG_FILE"
+                echo "  • /var/log/brce_sync.log"
+                echo ""
+                read -p "确认清理？(y/N): " confirm_clean
+                if [[ "$confirm_clean" =~ ^[Yy]$ ]]; then
+                    # 清理安装日志
+                    if [[ -f "$LOG_FILE" ]]; then
+                        tail -n 1000 "$LOG_FILE" > "${LOG_FILE}.tmp" && mv "${LOG_FILE}.tmp" "$LOG_FILE"
+                        echo "✅ 已清理安装配置日志"
+                    fi
+                    
+                    # 清理同步日志
+                    if [[ -f "/var/log/brce_sync.log" ]]; then
+                        tail -n 1000 /var/log/brce_sync.log > /var/log/brce_sync.log.tmp && mv /var/log/brce_sync.log.tmp /var/log/brce_sync.log
+                        echo "✅ 已清理同步日志"
+                    fi
+                    
+                    echo "✅ 日志清理完成"
+                else
+                    echo "❌ 取消清理操作"
+                fi
+                echo ""
+                read -p "按回车键继续..." -r
+                ;;
+            0)
+                break
+                ;;
+            *)
+                echo ""
+                echo "❌ 无效选项！请输入 0-6 之间的数字"
+                sleep 2
+                ;;
+        esac
+    done
 }
 
 # 用户管理菜单
@@ -2065,13 +2275,14 @@ main_menu() {
     echo "3) 🔄 重启FTP服务"
     echo "4) 🧪 测试双向实时同步功能"
     echo "5) 👥 FTP用户管理 (密码/添加/删除)"
-    echo "6) 🗑️ 卸载FTP服务"
-    echo "7) 🔄 在线更新脚本"
+    echo "6) 📋 查看日志文件 (故障排除)"
+    echo "7) 🗑️ 卸载FTP服务"
+    echo "8) 🔄 在线更新脚本"
     echo "0) 退出"
     echo ""
     echo "📝 快捷键： Ctrl+C 快速退出"
     echo ""
-    read -p "请输入选项 (0-7): " choice
+    read -p "请输入选项 (0-8): " choice
     
     case $choice in
         1)
@@ -2115,13 +2326,20 @@ main_menu() {
             }
             ;;
         6)
+            view_logs || {
+                echo ""
+                echo "⚠️ 日志查看遇到问题"
+                read -p "按回车键返回主菜单..." -r
+            }
+            ;;
+        7)
             uninstall_brce_ftp || {
                 echo ""
                 echo "⚠️ 卸载过程遇到问题"
                 read -p "按回车键返回主菜单..." -r
             }
             ;;
-        7)
+        8)
             update_script || {
                 echo ""
                 echo "⚠️ 更新过程遇到问题"
@@ -2133,7 +2351,7 @@ main_menu() {
             ;;
         *)
             echo ""
-            echo "❌ 无效选项！请输入 0-7 之间的数字"
+            echo "❌ 无效选项！请输入 0-8 之间的数字"
             echo "ℹ️  提示：输入数字后按回车键确认"
             sleep 2
             ;;
