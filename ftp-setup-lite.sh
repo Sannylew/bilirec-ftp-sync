@@ -107,7 +107,7 @@ generate_vsftpd_config() {
     
     # 生成新配置
     cat > /etc/vsftpd.conf << EOF
-# BRCE FTP Lite 配置文件
+# BRCE FTP Lite 配置文件 - 简化版
 listen=YES
 listen_ipv6=NO
 anonymous_enable=NO
@@ -115,14 +115,11 @@ local_enable=YES
 write_enable=YES
 delete_enable=YES
 local_umask=022
-file_open_mode=0666
-allow_writeable_chroot=YES
 dirmessage_enable=YES
 use_localtime=YES
 xferlog_enable=YES
 connect_from_port_20=YES
-chroot_local_user=YES
-secure_chroot_dir=/var/run/vsftpd/empty
+chroot_local_user=NO
 pam_service_name=vsftpd
 rsa_cert_file=/etc/ssl/certs/ssl-cert-snakeoil.pem
 rsa_private_key_file=/etc/ssl/private/ssl-cert-snakeoil.key
@@ -135,76 +132,39 @@ pasv_max_port=40100
 pasv_address=
 EOF
 
-    log_info "vsftpd 配置文件已生成 - 用户被限制在家目录内"
+    log_info "vsftpd 配置文件已生成 - 简化配置，无chroot限制"
 }
 
-# 创建FTP用户
+# 创建FTP用户 - 简化版
 create_ftp_user() {
     local username="$1"
     local password="$2"
-    local source_dir="$3"
+    local recording_dir="$3"
     
-    # 检查源目录
-    if [[ ! -d "$source_dir" ]]; then
-        log_error "源目录不存在: $source_dir"
+    # 检查录制目录
+    if [[ ! -d "$recording_dir" ]]; then
+        log_error "录制目录不存在: $recording_dir"
         return 1
     fi
     
     # 检查用户是否已存在
     if id "$username" &>/dev/null; then
         log_warn "用户 $username 已存在，将重新配置"
-        # 清理旧的挂载点
-        cleanup_existing_user "$username"
-    else
-        # 创建用户，但家目录设为/home/username/ftp
-        useradd -m -s /bin/bash "$username"
-        log_info "已创建用户: $username"
+        userdel -r "$username" 2>/dev/null || true
     fi
+    
+    # 创建用户，直接使用录制目录作为家目录
+    useradd -d "$recording_dir" -s /bin/bash "$username"
+    log_info "已创建用户: $username (家目录: $recording_dir)"
     
     # 设置密码
     echo "$username:$password" | chpasswd
     log_info "已设置用户密码"
     
-    # 创建FTP目录结构
-    local ftp_home="/home/$username/ftp"
-    mkdir -p "$ftp_home"
-    
-    # 关键：chroot环境下的权限设置
-    # 家目录的父目录必须属于root且不能被其他用户写入
-    chown root:root "/home/$username"
-    chmod 755 "/home/$username"
-    
-    # ftp目录初始权限设置
-    chown root:root "$ftp_home"
-    chmod 755 "$ftp_home"
-    
-    # 修改用户家目录指向ftp目录，这样用户登录后直接到ftp目录
-    usermod -d "$ftp_home" "$username"
-    
-    # 创建读写bind mount映射
-    log_info "创建读写映射: $source_dir -> $ftp_home"
-    mount --bind "$source_dir" "$ftp_home"
-    
-    # bind mount后重新设置权限
-    # 重要：bind mount后需要重新设置挂载点的权限
-    chown "$username:ftp-users" "$ftp_home"
-    chmod 755 "$ftp_home"
-    
-    # 设置源目录权限（这会影响到挂载点）
-    chmod 755 "$source_dir"
-    chown root:ftp-users "$source_dir" 2>/dev/null || true
-    chmod 775 "$source_dir" 2>/dev/null || true
-    
-    # 确保父目录权限正确（chroot要求）
-    chown root:root "/home/$username"
-    chmod 755 "/home/$username"
-    
-    # 添加到fstab以实现开机自动挂载
-    local fstab_entry="$source_dir $ftp_home none bind 0 0"
-    if ! grep -q "$ftp_home" /etc/fstab; then
-        echo "$fstab_entry" >> /etc/fstab
-        log_info "已添加到 /etc/fstab 实现开机自动挂载"
-    fi
+    # 设置录制目录权限
+    # 确保用户可以读写删除
+    chown root:ftp-users "$recording_dir"
+    chmod 775 "$recording_dir"
     
     # 创建FTP用户组（用于管理和识别）
     if ! getent group ftp-users >/dev/null; then
@@ -213,51 +173,46 @@ create_ftp_user() {
     fi
     usermod -a -G ftp-users "$username"
     
-    log_info "FTP用户配置完成 - 用户登录后直接在 $ftp_home，可以读写删除源目录内容"
+    log_info "FTP用户配置完成 - 用户登录后直接在录制目录 $recording_dir，可以读写删除文件"
 }
 
-# 修复FTP权限问题
+# 修复FTP权限问题 - 简化版
 fix_ftp_permissions() {
     echo ""
     echo "🔧 修复FTP权限问题..."
     echo ""
     
     local fixed=false
+    local recording_dir="/opt/brec/file"
     
-    # 检查所有FTP用户目录
-    for user_home in /home/*/ftp; do
-        if [[ -d "$user_home" ]]; then
-            local username=$(basename $(dirname "$user_home"))
-            echo "🔧 修复用户 $username 的权限..."
-            
-            # 修复chroot目录权限（关键！）
-            echo "   🔧 修复chroot权限结构..."
-            chown root:root "/home/$username"
-            chmod 755 "/home/$username"
-            
-            # 修复挂载点权限
-            if mountpoint -q "$user_home"; then
-                local source_dir=$(findmnt -n -o SOURCE "$user_home")
-                echo "   📁 修复源目录权限: $source_dir"
-                
-                # 先设置源目录权限
-                chmod 775 "$source_dir"
-                chown root:ftp-users "$source_dir" 2>/dev/null || true
-                
-                # 再设置挂载点权限
-                chown "$username:ftp-users" "$user_home"
-                chmod 755 "$user_home"
-            else
-                echo "   ⚠️ 警告: $user_home 不是挂载点，可能需要重新挂载"
-            fi
-            
-            # 确保用户在ftp-users组中
-            usermod -a -G ftp-users "$username" 2>/dev/null || true
-            
-            echo "   ✅ 用户 $username 权限修复完成"
-            fixed=true
+    # 检查录制目录权限
+    if [[ -d "$recording_dir" ]]; then
+        echo "🔧 修复录制目录权限: $recording_dir"
+        chown root:ftp-users "$recording_dir"
+        chmod 775 "$recording_dir"
+        echo "   ✅ 录制目录权限修复完成"
+        fixed=true
+    fi
+    
+    # 检查FTP用户组中的用户
+    if getent group ftp-users >/dev/null 2>&1; then
+        local ftp_users=$(getent group ftp-users | cut -d: -f4)
+        if [[ -n "$ftp_users" ]]; then
+            echo "🔧 检查FTP用户..."
+            for user in $(echo "$ftp_users" | tr ',' ' '); do
+                if id "$user" &>/dev/null; then
+                    # 确保用户家目录指向录制目录
+                    local user_home=$(getent passwd "$user" | cut -d: -f6)
+                    if [[ "$user_home" != "$recording_dir" ]]; then
+                        echo "   📁 修复用户 $user 家目录: $user_home -> $recording_dir"
+                        usermod -d "$recording_dir" "$user"
+                    fi
+                    echo "   ✅ 用户 $user 配置正确"
+                    fixed=true
+                fi
+            done
         fi
-    done
+    fi
     
     if [[ "$fixed" == "true" ]]; then
         echo ""
@@ -271,18 +226,10 @@ fix_ftp_permissions() {
         echo ""
         echo "🔍 权限诊断信息："
         echo "   - vsftpd配置: /etc/vsftpd.conf"
-        echo "   - 检查配置: allow_writeable_chroot=YES"
-        if grep -q "allow_writeable_chroot=YES" /etc/vsftpd.conf 2>/dev/null; then
-            echo "   ✅ chroot配置正确"
-        else
-            echo "   ❌ 缺少 allow_writeable_chroot=YES 配置"
-            echo ""
-            echo "🔧 添加缺失配置..."
-            echo "allow_writeable_chroot=YES" >> /etc/vsftpd.conf
-            echo "   ✅ 已添加 allow_writeable_chroot=YES"
-        fi
+        echo "   - 录制目录: $recording_dir"
+        echo "   - 目录权限: $(ls -ld "$recording_dir" 2>/dev/null | awk '{print $1, $3, $4}' || echo '未找到')"
         echo ""
-        echo "🎉 权限修复完成！请重新尝试FTP操作"
+        echo "🎉 权限修复完成！FTP用户现在可以直接访问录制目录"
     else
         echo "ℹ️  未找到需要修复的FTP用户"
     fi
@@ -384,27 +331,32 @@ install_ftp_lite() {
     echo "======================================================"
     echo ""
     echo "💡 轻量版特性："
-    echo "   • 只读bind mount映射 - 零资源消耗"
-    echo "   • 实时文件访问 - 录制文件立即可见"
+    echo "   • 直接目录访问 - 无复杂权限配置"
+    echo "   • 统一录制目录 - 录播姬和FTP共用/opt/brec/file"
     echo "   • 完全兼容录播姬 - 无任何干扰"
     echo "   • 简单易用 - 一键部署"
     echo ""
     
-    # 获取源目录
-    read -p "📁 请输入录播姬目录路径 (默认: /root/brec/file): " source_dir
-    source_dir=${source_dir:-/root/brec/file}
+    # 设置录制目录
+    local recording_dir="/opt/brec/file"
+    echo "📁 录制目录: $recording_dir"
+    echo "💡 录播姬请设置输出目录为: $recording_dir"
+    echo ""
     
-    # 检查源目录
-    if [[ ! -d "$source_dir" ]]; then
-        log_warn "目录 $source_dir 不存在"
-        read -p "是否创建此目录？(y/N): " create_dir
-        if [[ "$create_dir" =~ ^[Yy]$ ]]; then
-            mkdir -p "$source_dir"
-            log_info "已创建目录: $source_dir"
-        else
-            log_error "安装取消"
-            return 1
-        fi
+    # 确认是否继续
+    read -p "🤔 是否继续安装？录播姬需要配置输出到此目录 (y/N): " confirm
+    if [[ ! "$confirm" =~ ^[Yy]$ ]]; then
+        echo "❌ 安装已取消"
+        return 0
+    fi
+    
+    # 检查并创建录制目录
+    if [[ ! -d "$recording_dir" ]]; then
+        echo "📁 创建录制目录: $recording_dir"
+        mkdir -p "$recording_dir"
+        log_info "已创建录制目录: $recording_dir"
+    else
+        echo "✅ 录制目录已存在: $recording_dir"
     fi
     
     # 获取FTP用户名
@@ -467,7 +419,7 @@ install_ftp_lite() {
     
     # 创建FTP用户
     log_info "正在配置FTP用户..."
-    if ! create_ftp_user "$ftp_user" "$ftp_password" "$source_dir"; then
+    if ! create_ftp_user "$ftp_user" "$ftp_password" "$recording_dir"; then
         log_error "FTP用户配置失败"
         return 1
     fi
@@ -500,17 +452,17 @@ install_ftp_lite() {
     echo "   🔌 FTP端口: 21"
     echo "   👤 用户名: $ftp_user"
     echo "   🔐 密码: $ftp_password"
-    echo "   📁 登录目录: / (用户被限制在家目录内，显示为根目录)"
-    echo "   📁 实际目录: /home/$ftp_user/ftp (映射到 $source_dir)"
+    echo "   📁 登录目录: $recording_dir"
+    echo "   📁 录制目录: $recording_dir (与FTP目录相同)"
     
     echo ""
     echo "💡 特性说明："
-    echo "   • 📍 安全限制: 用户被限制在家目录内，无法访问其他系统目录"
-    echo "   • 🔗 读写映射: 该目录映射到录播文件目录，支持读写"
+    echo "   • 📁 统一目录: 录播姬和FTP使用相同目录，无需映射"
     echo "   • 🚀 实时可见: 录制文件立即显示"
     echo "   • 🛡️ 完全兼容: 不会干扰录播姬录制过程"
-    echo "   • 💾 零消耗: 无后台进程，直接bind mount"
+    echo "   • 💾 零消耗: 无后台进程，无bind mount"
     echo "   • ✏️ 完整权限: 用户可以下载、上传、删除、重命名文件"
+    echo "   • 🔧 简单配置: 无复杂chroot或权限问题"
     echo ""
     echo "🔧 常用命令："
     echo "   • 重启FTP服务: sudo systemctl restart vsftpd"
@@ -547,25 +499,23 @@ show_status() {
     echo ""
     echo "📋 FTP用户列表:"
     local ftp_users_found=false
+    local recording_dir="/opt/brec/file"
     
-    # 检查FTP用户（通过检查/home/*/ftp目录）
-    for user_home in /home/*/ftp; do
-        if [[ -d "$user_home" ]]; then
-            local username=$(basename $(dirname "$user_home"))
-            echo "   👤 $username"
-            echo "      📁 家目录: $user_home"
-            
-            # 检查映射状态
-            if mountpoint -q "$user_home"; then
-                echo "      🔗 映射状态: 已映射"
-                local source_dir=$(findmnt -n -o SOURCE "$user_home")
-                echo "      📁 映射源: $source_dir"
-            else
-                echo "      ❌ 映射状态: 未映射"
-            fi
-            ftp_users_found=true
+    # 检查FTP用户（通过ftp-users组）
+    if getent group ftp-users >/dev/null 2>&1; then
+        local ftp_users=$(getent group ftp-users | cut -d: -f4)
+        if [[ -n "$ftp_users" ]]; then
+            for username in $(echo "$ftp_users" | tr ',' ' '); do
+                if id "$username" &>/dev/null; then
+                    echo "   👤 $username"
+                    echo "      📁 家目录: $recording_dir"
+                    echo "      📁 录制目录: $recording_dir"
+                    echo "      🔗 访问状态: 直接访问（无映射）"
+                    ftp_users_found=true
+                fi
+            done
         fi
-    done
+    fi
     
     if [[ "$ftp_users_found" == "false" ]]; then
         echo "   (无FTP用户)"
@@ -608,24 +558,22 @@ list_users() {
     echo ""
     echo "📋 当前FTP用户："
     local count=0
+    local recording_dir="/opt/brec/file"
     
-    # 显示FTP用户（通过检查/home/*/ftp目录）
-    for user_home in /home/*/ftp; do
-        if [[ -d "$user_home" ]]; then
-            local username=$(basename $(dirname "$user_home"))
-            ((count++))
-            echo "$count. 👤 $username"
-            echo "   📁 家目录: $user_home"
-            
-            # 检查映射状态
-            if mountpoint -q "$user_home"; then
-                local source_dir=$(findmnt -n -o SOURCE "$user_home")
-                echo "   🔗 映射到: $source_dir"
-            else
-                echo "   ❌ 映射状态: 未映射"
-            fi
+    # 显示FTP用户（通过ftp-users组）
+    if getent group ftp-users >/dev/null 2>&1; then
+        local ftp_users=$(getent group ftp-users | cut -d: -f4)
+        if [[ -n "$ftp_users" ]]; then
+            for username in $(echo "$ftp_users" | tr ',' ' '); do
+                if id "$username" &>/dev/null; then
+                    ((count++))
+                    echo "$count. 👤 $username"
+                    echo "   📁 家目录: $recording_dir"
+                    echo "   📁 录制目录: $recording_dir (直接访问)"
+                fi
+            done
         fi
-    done
+    fi
     
     if [[ $count -eq 0 ]]; then
         echo "   (无FTP用户)"
@@ -679,13 +627,14 @@ add_user() {
     confirm=${confirm:-Y}
     
     if [[ "$confirm" =~ ^[Yy]$ ]]; then
-        if create_ftp_user "$new_username" "$new_password" "$source_dir"; then
+        if create_ftp_user "$new_username" "$new_password" "/opt/brec/file"; then
             echo ""
             echo "✅ 用户添加成功！"
             echo "   👤 用户名: $new_username"
             echo "   🔐 密码: $new_password"
-            echo "   📁 用户家目录: /home/$new_username/ftp"
-            echo "   🔗 映射源目录: $source_dir (读写权限)"
+            echo "   📁 用户家目录: /opt/brec/file"
+            echo "   📁 录制目录: /opt/brec/file (与家目录相同)"
+            echo "   📁 用户权限: 可以读取、写入、删除文件"
         else
             log_error "用户添加失败"
         fi
@@ -705,12 +654,16 @@ change_password() {
     
     # 列出用户
     local users=()
-    for user_home in /home/*/ftp; do
-        if [[ -d "$user_home" ]]; then
-            local username=$(basename $(dirname "$user_home"))
-            users+=("$username")
+    if getent group ftp-users >/dev/null 2>&1; then
+        local ftp_users=$(getent group ftp-users | cut -d: -f4)
+        if [[ -n "$ftp_users" ]]; then
+            for username in $(echo "$ftp_users" | tr ',' ' '); do
+                if id "$username" &>/dev/null; then
+                    users+=("$username")
+                fi
+            done
         fi
-    done
+    fi
     
     if [[ ${#users[@]} -eq 0 ]]; then
         log_error "没有FTP用户"
@@ -766,12 +719,16 @@ delete_user() {
     
     # 列出用户
     local users=()
-    for user_home in /home/*/ftp; do
-        if [[ -d "$user_home" ]]; then
-            local username=$(basename $(dirname "$user_home"))
-            users+=("$username")
+    if getent group ftp-users >/dev/null 2>&1; then
+        local ftp_users=$(getent group ftp-users | cut -d: -f4)
+        if [[ -n "$ftp_users" ]]; then
+            for username in $(echo "$ftp_users" | tr ',' ' '); do
+                if id "$username" &>/dev/null; then
+                    users+=("$username")
+                fi
+            done
         fi
-    done
+    fi
     
     if [[ ${#users[@]} -eq 0 ]]; then
         log_error "没有FTP用户可删除"
@@ -793,29 +750,22 @@ delete_user() {
         return 1
     fi
     
-    local user_home="/home/$target_user/ftp"
+    local recording_dir="/opt/brec/file"
     
     echo ""
     echo "⚠️ 即将删除用户: $target_user"
-    echo "   📁 将删除目录: /home/$target_user"
-    if mountpoint -q "$user_home"; then
-        echo "   🔗 将卸载映射"
-    fi
+    echo "   📁 家目录: $recording_dir"
+    echo "   💡 注意: 录制目录本身不会被删除"
     echo ""
     
     read -p "确认删除用户 $target_user？(y/N): " confirm
     if [[ "$confirm" =~ ^[Yy]$ ]]; then
-        # 卸载映射
-        if mountpoint -q "$user_home"; then
-            umount "$user_home"
-            sed -i "\|$user_home|d" /etc/fstab
-        fi
-        
-        # 删除用户
-        userdel -r "$target_user" 2>/dev/null || true
+        # 删除用户（不删除家目录，因为是共享的录制目录）
+        userdel "$target_user" 2>/dev/null || true
         
         echo ""
         echo "✅ 用户删除成功: $target_user"
+        echo "💡 录制目录 $recording_dir 已保留"
     else
         log_info "取消删除操作"
     fi
@@ -1338,21 +1288,18 @@ uninstall_service() {
     
     # 删除FTP用户
     log_info "删除FTP用户..."
-    for user_home in /home/*/ftp; do
-        if [[ -d "$user_home" ]]; then
-            local username=$(basename $(dirname "$user_home"))
-            
-            # 卸载映射
-            if mountpoint -q "$user_home"; then
-                umount "$user_home" 2>/dev/null || true
-                sed -i "\|$user_home|d" /etc/fstab 2>/dev/null || true
-            fi
-            
-            # 删除用户
-            userdel -r "$username" 2>/dev/null || true
-            log_info "已删除用户: $username"
+    if getent group ftp-users >/dev/null 2>&1; then
+        local ftp_users=$(getent group ftp-users | cut -d: -f4)
+        if [[ -n "$ftp_users" ]]; then
+            for username in $(echo "$ftp_users" | tr ',' ' '); do
+                if id "$username" &>/dev/null; then
+                    # 删除用户（不删除录制目录）
+                    userdel "$username" 2>/dev/null || true
+                    log_info "已删除用户: $username"
+                fi
+            done
         fi
-    done
+    fi
     
     # 恢复配置
     log_info "恢复配置文件..."
