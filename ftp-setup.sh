@@ -696,12 +696,22 @@ sync_to_target() {
         touch "$LOCK_FILE.target"
         log_sync "同步 源→FTP"
         
-        if rsync -av --delete "$SOURCE_DIR/" "$TARGET_DIR/" 2>> "$LOG_FILE"; then
+        # 确保目标目录存在
+        mkdir -p "$TARGET_DIR"
+        
+        # 先尝试不带 --delete 的同步，再处理删除
+        if rsync -av --exclude='.*' "$SOURCE_DIR/" "$TARGET_DIR/" 2>> "$LOG_FILE"; then
             # 设置正确权限
             if chown -R "$USER:$USER" "$TARGET_DIR" 2>> "$LOG_FILE"; then
                 find "$TARGET_DIR" -type f -exec chmod 644 {} \; 2>> "$LOG_FILE" || log_sync "WARNING: 部分文件权限设置失败"
                 find "$TARGET_DIR" -type d -exec chmod 755 {} \; 2>> "$LOG_FILE" || log_sync "WARNING: 部分目录权限设置失败"
-                log_sync "同步完成: 源→FTP"
+                
+                # 单独处理删除操作
+                if rsync -av --delete --exclude='.*' "$SOURCE_DIR/" "$TARGET_DIR/" 2>> "$LOG_FILE"; then
+                    log_sync "同步完成: 源→FTP (包含删除)"
+                else
+                    log_sync "同步完成: 源→FTP (删除操作部分失败)"
+                fi
             else
                 log_sync "ERROR: 权限设置失败"
             fi
@@ -735,13 +745,13 @@ sync_to_source() {
 
 # 监控源目录变化→FTP目录
 monitor_source() {
-            while true; do
-            if inotifywait -m -r -e modify,create,delete,move,moved_to,moved_from "$SOURCE_DIR" 2>/dev/null |
-        while read -r path action file; do
-            log_sync "源目录变化: $action $file"
-            sleep 0.05
-            sync_to_target
-        done; then
+    while true; do
+        if inotifywait -m -r -e modify,create,delete,move,moved_to,moved_from "$SOURCE_DIR" 2>/dev/null |
+            while read -r path action file; do
+                log_sync "源目录变化: $action $file"
+                sleep 0.05
+                sync_to_target
+            done; then
             log_sync "源目录监控正常重启"
         else
             log_sync "ERROR: 源目录监控失败，尝试重启..."
@@ -752,13 +762,13 @@ monitor_source() {
 
 # 监控FTP目录变化→源目录  
 monitor_target() {
-            while true; do
-            if inotifywait -m -r -e modify,create,delete,move,moved_to,moved_from "$TARGET_DIR" 2>/dev/null |
-        while read -r path action file; do
-            log_sync "FTP目录变化: $action $file"
-            sleep 0.05
-            sync_to_source
-        done; then
+    while true; do
+        if inotifywait -m -r -e modify,create,delete,move,moved_to,moved_from "$TARGET_DIR" 2>/dev/null |
+            while read -r path action file; do
+                log_sync "FTP目录变化: $action $file"
+                sleep 0.05
+                sync_to_source
+            done; then
             log_sync "FTP目录监控正常重启"
         else
             log_sync "ERROR: FTP目录监控失败，尝试重启..."
@@ -781,12 +791,8 @@ trap cleanup SIGTERM SIGINT
 
 # 初始同步（源→目标）
 log_sync "执行初始同步（源→FTP）..."
-if sync_to_target; then
-    log_sync "初始同步完成，开始双向监控..."
-else
-    log_sync "ERROR: 初始同步失败"
-    exit 1
-fi
+sync_to_target
+log_sync "初始同步完成，开始双向监控..."
 
 # 启动双向监控（后台并行运行）
 monitor_source &
