@@ -146,21 +146,30 @@ generate_vsftpd_config() {
     # 直接生成新配置，不备份
     log_info "生成vsftpd配置文件"
     
+    # 确保关键目录存在
+    mkdir -p /var/run/vsftpd/empty 2>/dev/null || true
+    
     # 生成新配置
     cat > /etc/vsftpd.conf << EOF
 # BRCE FTP Lite 配置文件 - 简化版
+
+# 基本设置
 listen=YES
 listen_ipv6=NO
 anonymous_enable=NO
 local_enable=YES
 write_enable=YES
-delete_enable=YES
 local_umask=022
 dirmessage_enable=YES
 use_localtime=YES
 xferlog_enable=YES
 connect_from_port_20=YES
+
+# 用户权限设置
 chroot_local_user=NO
+allow_writeable_chroot=YES
+
+# PAM 认证
 pam_service_name=vsftpd
 
 # 被动模式配置
@@ -170,10 +179,34 @@ pasv_max_port=40100
 
 # 安全设置
 secure_chroot_dir=/var/run/vsftpd/empty
+
+# 禁用不必要功能
 userlist_enable=NO
 tcp_wrappers=NO
+guest_enable=NO
+virtual_use_local_privs=NO
+
+# 文件传输设置
+ascii_upload_enable=YES
+ascii_download_enable=YES
+
+# 日志设置
+xferlog_std_format=YES
+log_ftp_protocol=NO
+
+# 超时设置
+idle_session_timeout=600
+data_connection_timeout=120
 EOF
 
+    # 验证配置文件语法
+    log_debug "验证配置文件语法"
+    if vsftpd /etc/vsftpd.conf -t 2>/dev/null; then
+        log_debug "配置文件语法验证通过"
+    else
+        log_warn "无法验证配置文件语法（可能vsftpd版本不支持-t选项）"
+    fi
+    
     log_info "vsftpd 配置文件已生成 - 简化配置，无chroot限制"
 }
 
@@ -299,16 +332,32 @@ cleanup_existing_user() {
 
 # 启动服务
 start_services() {
-    log_debug "检查配置文件语法"
+    log_debug "准备启动vsftpd服务"
+    
     # 检查配置文件是否存在
     if [[ ! -f /etc/vsftpd.conf ]]; then
         log_error "配置文件不存在: /etc/vsftpd.conf"
         return 1
     fi
+    log_debug "配置文件存在: /etc/vsftpd.conf"
+    
+    # 确保关键目录存在
+    log_debug "检查并创建关键目录"
+    if ! mkdir -p /var/run/vsftpd/empty 2>/dev/null; then
+        log_warn "无法创建vsftpd运行目录"
+    else
+        log_debug "vsftpd运行目录检查完成"
+    fi
+    
+    # 设置目录权限
+    chmod 755 /var/run/vsftpd 2>/dev/null || true
+    chmod 755 /var/run/vsftpd/empty 2>/dev/null || true
     
     # 测试配置文件
-    log_debug "验证vsftpd配置文件"
-    if ! vsftpd -v 2>/dev/null; then
+    log_debug "获取vsftpd版本信息"
+    if vsftpd -v 2>/dev/null; then
+        log_debug "vsftpd版本信息获取成功"
+    else
         log_warn "无法获取vsftpd版本信息"
     fi
     
