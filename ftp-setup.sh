@@ -645,6 +645,7 @@ create_sync_script() {
     local user="${1:-}"
     local source_dir="${2:-}"
     local target_dir="${3:-}"
+    local recording_protection="${4:-true}"
     
     if [[ -z "$user" ]]; then
         log_error "create_sync_script: 缺少用户名参数"
@@ -674,6 +675,7 @@ set -euo pipefail
 USER="${USER}"
 SOURCE_DIR="${SOURCE_DIR}"
 TARGET_DIR="${TARGET_DIR}"
+RECORDING_PROTECTION="${RECORDING_PROTECTION}"
 LOCK_FILE="/tmp/brce_sync.lock"
 LOG_FILE="/var/log/brce_sync.log"
 
@@ -685,12 +687,110 @@ log_sync() {
 log_sync "启动BRCE FTP双向实时同步服务"
 log_sync "源目录: $SOURCE_DIR"
 log_sync "目标目录: $TARGET_DIR"
+log_sync "录播保护: $RECORDING_PROTECTION"
 
 # 创建锁文件目录和日志目录
 mkdir -p "$(dirname "$LOCK_FILE")"
 mkdir -p "$(dirname "$LOG_FILE")"
 
-# 同步函数：避免循环同步，增强错误处理
+# 检查文件是否正在被写入（录播保护机制）
+is_file_being_written() {
+    local file="$1"
+    
+    # 检查文件是否存在
+    [[ ! -f "$file" ]] && return 1
+    
+    # 检查文件是否被进程打开用于写入
+    if command -v lsof >/dev/null 2>&1; then
+        if lsof "$file" 2>/dev/null | grep -q "w"; then
+            log_sync "SKIP: 文件正在被写入: $(basename "$file")"
+            return 0
+        fi
+    fi
+    
+    # 检查文件大小是否在短时间内发生变化
+    local size1 size2
+    size1=$(stat -c%s "$file" 2>/dev/null || echo "0")
+    sleep 0.5
+    size2=$(stat -c%s "$file" 2>/dev/null || echo "0")
+    
+    if [[ "$size1" != "$size2" ]]; then
+        log_sync "SKIP: 文件大小正在变化: $(basename "$file") ($size1 -> $size2 bytes)"
+        return 0
+    fi
+    
+    return 1
+}
+
+# 检查是否为录播相关文件
+is_recording_file() {
+    local file="$1"
+    local basename=$(basename "$file")
+    
+    # 常见的录播文件扩展名
+    case "${basename,,}" in
+        *.flv|*.mp4|*.mkv|*.avi|*.ts|*.m4v|*.webm|*.f4v)
+            return 0
+            ;;
+        *.part|*.tmp|*.temp|*.download)
+            return 0
+            ;;
+        *)
+            return 1
+            ;;
+    esac
+}
+
+# 等待文件稳定（录播保护）
+wait_for_file_stable() {
+    local file="$1"
+    local max_wait=30  # 最大等待30秒
+    local wait_count=0
+    
+    # 如果不是录播文件，直接返回
+    is_recording_file "$file" || return 0
+    
+    log_sync "WAIT: 等待录播文件稳定: $(basename "$file")"
+    
+    while [[ $wait_count -lt $max_wait ]]; do
+        if ! is_file_being_written "$file"; then
+            log_sync "READY: 文件已稳定: $(basename "$file")"
+            return 0
+        fi
+        
+        sleep 1
+        ((wait_count++))
+        
+        # 每10秒输出一次等待状态
+        if [[ $((wait_count % 10)) -eq 0 ]]; then
+            log_sync "WAIT: 继续等待文件稳定: $(basename "$file") (${wait_count}s)"
+        fi
+    done
+    
+    log_sync "TIMEOUT: 文件等待超时，跳过同步: $(basename "$file")"
+    return 1
+}
+
+# 智能文件过滤（录播优化）
+should_sync_file() {
+    local file="$1"
+    
+    # 跳过隐藏文件
+    [[ "$(basename "$file")" =~ ^\. ]] && return 1
+    
+    # 如果启用了录播保护
+    if [[ "$RECORDING_PROTECTION" == "true" ]]; then
+        # 如果是录播文件，检查是否正在被写入
+        if is_recording_file "$file"; then
+            # 等待文件稳定
+            wait_for_file_stable "$file" || return 1
+        fi
+    fi
+    
+    return 0
+}
+
+# 同步函数：避免循环同步，增强错误处理，添加录播保护
 sync_to_target() {
     if [[ ! -f "$LOCK_FILE.target" ]]; then
         touch "$LOCK_FILE.target"
@@ -699,15 +799,35 @@ sync_to_target() {
         # 确保目标目录存在
         mkdir -p "$TARGET_DIR"
         
-        # 先尝试不带 --delete 的同步，再处理删除
-        if rsync -av --exclude='.*' "$SOURCE_DIR/" "$TARGET_DIR/" 2>> "$LOG_FILE"; then
+        # 根据录播保护设置选择rsync参数
+        local rsync_opts=(-av --exclude='.*')
+        
+        if [[ "$RECORDING_PROTECTION" == "true" ]]; then
+            # 录播保护模式：优化参数减少对录制的影响
+            rsync_opts+=(
+                --inplace           # 减少对正在写入文件的影响
+                --no-whole-file     # 只传输变化的部分
+                --exclude='*.part'  # 排除临时文件
+                --exclude='*.tmp'
+                --exclude='*.temp'
+                --exclude='*.download'
+                --bwlimit=50000     # 限制带宽，减少I/O竞争 (50MB/s)
+            )
+            log_sync "使用录播保护模式同步参数"
+        else
+            # 标准模式：追求同步速度
+            log_sync "使用标准模式同步参数"
+        fi
+        
+        if rsync "${rsync_opts[@]}" "$SOURCE_DIR/" "$TARGET_DIR/" 2>> "$LOG_FILE"; then
             # 设置正确权限
             if chown -R "$USER:$USER" "$TARGET_DIR" 2>> "$LOG_FILE"; then
                 find "$TARGET_DIR" -type f -exec chmod 644 {} \; 2>> "$LOG_FILE" || log_sync "WARNING: 部分文件权限设置失败"
                 find "$TARGET_DIR" -type d -exec chmod 755 {} \; 2>> "$LOG_FILE" || log_sync "WARNING: 部分目录权限设置失败"
                 
-                # 单独处理删除操作
-                if rsync -av --delete --exclude='.*' "$SOURCE_DIR/" "$TARGET_DIR/" 2>> "$LOG_FILE"; then
+                # 单独处理删除操作（延迟执行，避免误删正在录制的文件）
+                sleep 2
+                if rsync "${rsync_opts[@]}" --delete "$SOURCE_DIR/" "$TARGET_DIR/" 2>> "$LOG_FILE"; then
                     log_sync "同步完成: 源→FTP (包含删除)"
                 else
                     log_sync "同步完成: 源→FTP (删除操作部分失败)"
@@ -719,7 +839,7 @@ sync_to_target() {
             log_sync "ERROR: rsync同步失败 源→FTP"
         fi
         
-        sleep 0.2
+        sleep 0.5  # 增加延迟，减少I/O竞争
         rm -f "$LOCK_FILE.target"
     fi
 }
@@ -743,14 +863,45 @@ sync_to_source() {
     fi
 }
 
-# 监控源目录变化→FTP目录
+# 监控源目录变化→FTP目录（录播优化版）
 monitor_source() {
     while true; do
         if inotifywait -m -r -e modify,create,delete,move,moved_to,moved_from "$SOURCE_DIR" 2>/dev/null |
             while read -r path action file; do
-                log_sync "源目录变化: $action $file"
-                sleep 0.05
-                sync_to_target
+                local full_path="$path$file"
+                
+                # 智能过滤：跳过临时文件和正在写入的文件
+                case "$action" in
+                    "MODIFY"|"CREATE")
+                        # 对于修改和创建事件，检查是否应该同步
+                        if should_sync_file "$full_path"; then
+                            if [[ "$RECORDING_PROTECTION" == "true" ]]; then
+                                log_sync "源目录变化: $action $file (录播保护检查通过)"
+                                # 录播保护模式：延迟同步，减少对录播的影响
+                                sleep 3
+                            else
+                                log_sync "源目录变化: $action $file"
+                                # 标准模式：快速同步
+                                sleep 0.1
+                            fi
+                            sync_to_target
+                        else
+                            log_sync "源目录变化: $action $file (已跳过，录播保护)"
+                        fi
+                        ;;
+                    "DELETE"|"MOVED_FROM")
+                        # 删除事件立即处理
+                        log_sync "源目录变化: $action $file"
+                        sleep 1
+                        sync_to_target
+                        ;;
+                    *)
+                        # 其他事件延迟处理
+                        log_sync "源目录变化: $action $file"
+                        sleep 1
+                        sync_to_target
+                        ;;
+                esac
             done; then
             log_sync "源目录监控正常重启"
         else
@@ -813,6 +964,7 @@ EOF
     sed -i "s|\${USER}|$user|g" "$script_path"
     sed -i "s|\${SOURCE_DIR}|$source_dir|g" "$script_path"
     sed -i "s|\${TARGET_DIR}|$target_dir|g" "$script_path"
+    sed -i "s|\${RECORDING_PROTECTION}|$recording_protection|g" "$script_path"
     
     if chmod +x "$script_path"; then
         log_info "实时同步脚本已创建: $script_path"
@@ -923,6 +1075,28 @@ install_brce_ftp() {
     if [[ "$confirm" != "y" ]]; then
         log_info "用户取消配置"
         return 1
+    fi
+    
+    # 录播兼容性设置
+    echo ""
+    echo "🎥 录播兼容性设置："
+    echo "   如果您使用录播姬等录制软件，建议启用录播保护模式"
+    echo "   录播保护模式会避免同步正在录制的文件，减少对录制的影响"
+    echo ""
+    read -p "是否启用录播保护模式？(Y/n，默认 Y): " recording_protection
+    recording_protection=${recording_protection:-Y}
+    
+    if [[ "$recording_protection" =~ ^[Yy]$ ]]; then
+        enable_recording_protection=true
+        echo "✅ 已启用录播保护模式"
+        echo "   • 自动检测正在写入的文件"
+        echo "   • 等待文件稳定后再同步"
+        echo "   • 排除临时和部分下载文件"
+        echo "   • 减少I/O竞争，保护录制过程"
+    else
+        enable_recording_protection=false
+        echo "ℹ️ 已禁用录播保护模式（标准实时同步）"
+        echo "   ⚠️ 注意：可能会影响录播姬等录制软件的性能"
     fi
     
     # 获取FTP密码
@@ -1080,7 +1254,7 @@ install_brce_ftp() {
     fi
     
     # 创建实时同步脚本和服务
-    create_sync_script "$FTP_USER" "$SOURCE_DIR" "$ftp_home"
+    create_sync_script "$FTP_USER" "$SOURCE_DIR" "$ftp_home" "$enable_recording_protection"
     create_sync_service "$FTP_USER"
     
     # 生成配置
