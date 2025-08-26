@@ -3499,16 +3499,17 @@ main_menu() {
     echo "1) 🚀 安装/配置BRCE FTP服务 (双向零延迟)"
     echo "2) 📊 查看FTP服务状态"
     echo "3) 🔄 重启FTP服务"
-    echo "4) 🧪 测试双向实时同步功能"
-    echo "5) 👥 FTP用户管理 (密码/添加/删除)"
-    echo "6) 📋 查看日志文件 (故障排除)"
-    echo "7) 🗑️ 卸载FTP服务"
-    echo "8) 🔄 在线更新脚本"
+    echo "4) ⏹️ 停止FTP服务"
+    echo "5) 🧪 测试双向实时同步功能"
+    echo "6) 👥 FTP用户管理 (密码/添加/删除)"
+    echo "7) 📋 查看日志文件 (故障排除)"
+    echo "8) 🗑️ 卸载FTP服务"
+    echo "9) 🔄 在线更新脚本"
     echo "0) 退出"
     echo ""
     echo "📝 快捷键： Ctrl+C 快速退出"
     echo ""
-    read -p "请输入选项 (0-8): " choice
+    read -p "请输入选项 (0-9): " choice
     
     case $choice in
         1)
@@ -3538,34 +3539,99 @@ main_menu() {
             read -p "按回车键返回主菜单..." -r
             ;;
         4)
+            echo "⏹️ 停止FTP服务..."
+            echo ""
+            
+            # 检查服务状态
+            local vsftpd_running=false
+            local sync_running=false
+            
+            if systemctl is-active --quiet vsftpd 2>/dev/null; then
+                vsftpd_running=true
+            fi
+            
+            if systemctl is-active --quiet brce-ftp-sync 2>/dev/null; then
+                sync_running=true
+            fi
+            
+            if [[ "$vsftpd_running" == "false" && "$sync_running" == "false" ]]; then
+                echo "ℹ️ 所有FTP相关服务已处于停止状态"
+                echo ""
+                read -p "按回车键返回主菜单..." -r
+                return 0
+            fi
+            
+            # 显示将要停止的服务
+            echo "📋 检测到以下运行中的服务："
+            if [[ "$vsftpd_running" == "true" ]]; then
+                echo "   • vsftpd (FTP服务器)"
+            fi
+            if [[ "$sync_running" == "true" ]]; then
+                echo "   • brce-ftp-sync (实时同步服务)"
+            fi
+            echo ""
+            
+            read -p "确认停止这些服务？(y/N): " confirm_stop
+            if [[ "$confirm_stop" =~ ^[Yy]$ ]]; then
+                echo ""
+                echo "🛑 正在停止服务..."
+                
+                if [[ "$sync_running" == "true" ]]; then
+                    echo "   ⏹️ 停止实时同步服务..."
+                    if systemctl stop brce-ftp-sync 2>/dev/null; then
+                        echo "   ✅ brce-ftp-sync已停止"
+                    else
+                        echo "   ⚠️ brce-ftp-sync停止失败"
+                    fi
+                fi
+                
+                if [[ "$vsftpd_running" == "true" ]]; then
+                    echo "   ⏹️ 停止FTP服务器..."
+                    if systemctl stop vsftpd 2>/dev/null; then
+                        echo "   ✅ vsftpd已停止"
+                    else
+                        echo "   ⚠️ vsftpd停止失败"
+                    fi
+                fi
+                
+                echo ""
+                echo "🎉 服务停止完成！"
+                echo "💡 提示: 如需重新启动服务，请选择菜单选项3"
+            else
+                echo "✅ 已取消停止操作"
+            fi
+            echo ""
+            read -p "按回车键返回主菜单..." -r
+            ;;
+        5)
             test_realtime_sync || {
                 echo ""
                 echo "⚠️ 同步测试遇到问题"
                 read -p "按回车键返回主菜单..." -r
             }
             ;;
-        5)
+        6)
             user_management_menu || {
                 echo ""
                 echo "⚠️ 用户管理遇到问题"
                 read -p "按回车键返回主菜单..." -r
             }
             ;;
-        6)
+        7)
             view_logs || {
                 echo ""
                 echo "⚠️ 日志查看遇到问题"
                 read -p "按回车键返回主菜单..." -r
             }
             ;;
-        7)
+        8)
             uninstall_brce_ftp || {
                 echo ""
                 echo "⚠️ 卸载过程遇到问题"
                 read -p "按回车键返回主菜单..." -r
             }
             ;;
-        8)
+        9)
             update_script || {
                 echo ""
                 echo "⚠️ 更新过程遇到问题"
@@ -3577,7 +3643,7 @@ main_menu() {
             ;;
         *)
             echo ""
-            echo "❌ 无效选项！请输入 0-8 之间的数字"
+            echo "❌ 无效选项！请输入 0-9 之间的数字"
             echo "ℹ️  提示：输入数字后按回车键确认"
             sleep 2
             ;;
