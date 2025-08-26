@@ -99,11 +99,8 @@ install_vsftpd() {
 
 # 生成配置文件
 generate_vsftpd_config() {
-    # 备份原配置
-    if [[ -f "/etc/vsftpd.conf" ]]; then
-        cp "/etc/vsftpd.conf" "/etc/vsftpd.conf.backup.$(date +%Y%m%d_%H%M%S)"
-        log_info "已备份原配置文件"
-    fi
+    # 直接生成新配置，不备份
+    log_info "生成vsftpd配置文件"
     
     # 生成新配置
     cat > /etc/vsftpd.conf << EOF
@@ -136,7 +133,7 @@ EOF
 }
 
 # 创建FTP用户 - 简化版
-create_ftp_user() {
+create_ftp_user() {bei
     local username="$1"
     local password="$2"
     local recording_dir="$3"
@@ -1028,7 +1025,7 @@ perform_smart_update() {
     local SCRIPT_URL="https://raw.githubusercontent.com/Sannylew/bilirec-ftp-sync/main/ftp-setup-lite.sh"
     local CURRENT_SCRIPT="$(readlink -f "$0")"
     local TEMP_SCRIPT="/tmp/ftp_setup_lite_new.sh"
-    local BACKUP_SCRIPT="${CURRENT_SCRIPT}.backup.$(date +%Y%m%d_%H%M%S)"
+
     
     echo "📋 更新信息："
     echo "   - 当前脚本: $CURRENT_SCRIPT"
@@ -1129,7 +1126,7 @@ perform_smart_update() {
     fi
     
     # 执行更新
-    execute_update "$TEMP_SCRIPT" "$BACKUP_SCRIPT"
+    execute_update "$TEMP_SCRIPT"
 }
 
 # 强制更新功能
@@ -1141,7 +1138,7 @@ perform_force_update() {
     local SCRIPT_URL="https://raw.githubusercontent.com/Sannylew/bilirec-ftp-sync/main/ftp-setup-lite.sh"
     local CURRENT_SCRIPT="$(readlink -f "$0")"
     local TEMP_SCRIPT="/tmp/ftp_setup_lite_new.sh"
-    local BACKUP_SCRIPT="${CURRENT_SCRIPT}.backup.$(date +%Y%m%d_%H%M%S)"
+
     
     echo "📋 强制更新信息："
     echo "   - 当前脚本: $CURRENT_SCRIPT"
@@ -1184,26 +1181,17 @@ perform_force_update() {
     fi
     
     # 执行更新
-    execute_update "$TEMP_SCRIPT" "$BACKUP_SCRIPT"
+    execute_update "$TEMP_SCRIPT"
 }
 
 # 执行更新操作
 execute_update() {
     local temp_script="$1"
-    local backup_script="$2"
+
     local current_script="$(readlink -f "$0")"
     
     echo ""
     echo "🔄 执行更新操作..."
-    
-    # 备份当前脚本
-    echo "💾 备份当前脚本..."
-    if ! cp "$current_script" "$backup_script"; then
-        echo "❌ 备份失败"
-        rm -f "$temp_script"
-        return 1
-    fi
-    echo "✅ 备份完成: $backup_script"
     
     # 验证新脚本语法
     echo "🔍 验证新脚本..."
@@ -1218,8 +1206,6 @@ execute_update() {
     echo "🔄 替换脚本文件..."
     if ! cp "$temp_script" "$current_script"; then
         echo "❌ 脚本替换失败"
-        # 尝试恢复备份
-        cp "$backup_script" "$current_script" 2>/dev/null || true
         rm -f "$temp_script"
         return 1
     fi
@@ -1235,11 +1221,9 @@ execute_update() {
     echo "📋 更新后信息："
     local new_version=$(grep "SCRIPT_VERSION=" "$current_script" | head -1 | cut -d'"' -f2 2>/dev/null || echo "未知")
     echo "   - 新版本: $new_version"
-    echo "   - 备份文件: $backup_script"
     echo ""
     echo "💡 提示："
     echo "   - 更新已完成，建议重新运行脚本"
-    echo "   - 如有问题可使用备份文件恢复"
     echo ""
     
     read -p "是否立即重启脚本？(Y/n): " restart_script
@@ -1301,13 +1285,9 @@ uninstall_service() {
         fi
     fi
     
-    # 恢复配置
-    log_info "恢复配置文件..."
-    local latest_backup=$(ls /etc/vsftpd.conf.backup.* 2>/dev/null | tail -1)
-    if [[ -f "$latest_backup" ]]; then
-        cp "$latest_backup" /etc/vsftpd.conf
-        log_info "已恢复配置: $latest_backup"
-    fi
+    # 移除配置文件
+    log_info "移除配置文件..."
+    rm -f /etc/vsftpd.conf
     
     echo ""
     echo "✅ 卸载完成！"
