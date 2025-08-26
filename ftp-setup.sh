@@ -4,8 +4,9 @@
 # 版本: v1.0.3 - 修复密码显示问题
 # 修复语法错误、字符编码问题和密码显示bug
 
-# 严格模式
-set -eo pipefail
+# 部分严格模式 - 避免交互过程中意外退出
+set -o pipefail
+# 注意: 不使用 set -e 以避免菜单交互中的闪退问题
 
 # 全局配置
 readonly SCRIPT_VERSION="v1.0.3"
@@ -97,7 +98,8 @@ cleanup_and_exit() {
 setup_signal_handlers() {
     trap 'cleanup_and_exit 130' SIGINT   # Ctrl+C
     trap 'cleanup_and_exit 143' SIGTERM  # 终止信号
-    trap 'cleanup_and_exit 1' ERR        # 错误退出
+    # 移除 ERR 陷阱以避免菜单交互中的意外退出
+    # trap 'cleanup_and_exit 1' ERR        # 错误退出 - 已禁用
 }
 
 # 初始化函数
@@ -188,6 +190,7 @@ get_ftp_username() {
     done
     
     log_error "用户名配置失败，已达到最大尝试次数"
+    echo "💡 您可以稍后重新运行脚本"
     return 1
 }
 
@@ -285,6 +288,7 @@ get_source_directory() {
     done
     
     log_error "源目录配置失败，已达到最大尝试次数"
+    echo "💡 您可以稍后重新运行脚本"
     return 1
 }
 
@@ -2071,32 +2075,58 @@ main_menu() {
     
     case $choice in
         1)
-            install_brce_ftp
+            install_brce_ftp || {
+                echo ""
+                echo "⚠️ 安装过程遇到问题，请检查错误信息"
+                read -p "按回车键返回主菜单..." -r
+            }
             ;;
         2)
-            check_ftp_status
+            check_ftp_status || {
+                echo ""
+                echo "⚠️ 状态检查遇到问题"
+                read -p "按回车键返回主菜单..." -r
+            }
             ;;
         3)
             echo "🔄 重启FTP服务..."
-            systemctl restart vsftpd
-            systemctl restart brce-ftp-sync 2>/dev/null || true
-            if systemctl is-active --quiet vsftpd; then
+            systemctl restart vsftpd 2>/dev/null || echo "⚠️ vsftpd重启失败"
+            systemctl restart brce-ftp-sync 2>/dev/null || echo "⚠️ 同步服务重启失败"
+            if systemctl is-active --quiet vsftpd 2>/dev/null; then
                 echo "✅ FTP服务重启成功"
             else
                 echo "❌ FTP服务重启失败"
             fi
+            echo ""
+            read -p "按回车键返回主菜单..." -r
             ;;
         4)
-            test_realtime_sync
+            test_realtime_sync || {
+                echo ""
+                echo "⚠️ 同步测试遇到问题"
+                read -p "按回车键返回主菜单..." -r
+            }
             ;;
         5)
-            user_management_menu
+            user_management_menu || {
+                echo ""
+                echo "⚠️ 用户管理遇到问题"
+                read -p "按回车键返回主菜单..." -r
+            }
             ;;
         6)
-            uninstall_brce_ftp
+            uninstall_brce_ftp || {
+                echo ""
+                echo "⚠️ 卸载过程遇到问题"
+                read -p "按回车键返回主菜单..." -r
+            }
             ;;
         7)
-            update_script
+            update_script || {
+                echo ""
+                echo "⚠️ 更新过程遇到问题"
+                read -p "按回车键返回主菜单..." -r
+            }
             ;;
         0)
             cleanup_and_exit 0
