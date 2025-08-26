@@ -162,15 +162,16 @@ xferlog_enable=YES
 connect_from_port_20=YES
 chroot_local_user=NO
 pam_service_name=vsftpd
-rsa_cert_file=/etc/ssl/certs/ssl-cert-snakeoil.pem
-rsa_private_key_file=/etc/ssl/private/ssl-cert-snakeoil.key
-ssl_enable=NO
 
 # 被动模式配置
 pasv_enable=YES
 pasv_min_port=40000
 pasv_max_port=40100
-pasv_address=
+
+# 安全设置
+secure_chroot_dir=/var/run/vsftpd/empty
+userlist_enable=NO
+tcp_wrappers=NO
 EOF
 
     log_info "vsftpd 配置文件已生成 - 简化配置，无chroot限制"
@@ -298,14 +299,52 @@ cleanup_existing_user() {
 
 # 启动服务
 start_services() {
-    # 启动vsftpd
-    systemctl start vsftpd
-    systemctl enable vsftpd
+    log_debug "检查配置文件语法"
+    # 检查配置文件是否存在
+    if [[ ! -f /etc/vsftpd.conf ]]; then
+        log_error "配置文件不存在: /etc/vsftpd.conf"
+        return 1
+    fi
     
+    # 测试配置文件
+    log_debug "验证vsftpd配置文件"
+    if ! vsftpd -v 2>/dev/null; then
+        log_warn "无法获取vsftpd版本信息"
+    fi
+    
+    # 启动vsftpd
+    log_debug "执行: systemctl start vsftpd"
+    if systemctl start vsftpd; then
+        log_debug "systemctl start 命令执行成功"
+    else
+        log_error "systemctl start 命令执行失败"
+        log_debug "获取启动失败日志"
+        # 获取详细错误信息
+        journalctl -u vsftpd --no-pager -n 10 >> "$LOG_FILE" 2>&1
+        return 1
+    fi
+    
+    # 等待服务启动
+    log_debug "等待服务启动完成"
+    sleep 2
+    
+    log_debug "执行: systemctl enable vsftpd"
+    if systemctl enable vsftpd; then
+        log_debug "systemctl enable 命令执行成功"
+    else
+        log_warn "systemctl enable 命令执行失败"
+    fi
+    
+    # 检查服务状态
+    log_debug "检查服务启动状态"
     if systemctl is-active --quiet vsftpd; then
         log_info "vsftpd 服务启动成功"
+        log_debug "服务状态: $(systemctl is-active vsftpd)"
     else
         log_error "vsftpd 服务启动失败"
+        log_debug "服务状态: $(systemctl is-active vsftpd)"
+        log_debug "获取服务状态详情"
+        systemctl status vsftpd --no-pager -l >> "$LOG_FILE" 2>&1
         return 1
     fi
 }
