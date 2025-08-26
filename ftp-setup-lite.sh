@@ -11,6 +11,10 @@ set -o pipefail
 SCRIPT_VERSION="v1.1.0-lite"
 SCRIPT_NAME="BRCE FTP Lite"
 
+# 日志配置
+LOG_DIR="/var/log/brce-ftp"
+LOG_FILE="$LOG_DIR/install.log"
+
 # 颜色定义
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -18,17 +22,57 @@ YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 NC='\033[0m' # No Color
 
-# 日志函数
+# 初始化日志
+init_logging() {
+    # 创建日志目录
+    if [[ ! -d "$LOG_DIR" ]]; then
+        mkdir -p "$LOG_DIR" 2>/dev/null || {
+            echo "⚠️ 无法创建日志目录，将使用临时日志"
+            LOG_DIR="/tmp"
+            LOG_FILE="$LOG_DIR/brce-ftp-install.log"
+        }
+    fi
+    
+    # 开始新的日志会话
+    echo "=====================================================" >> "$LOG_FILE"
+    echo "$(date '+%Y-%m-%d %H:%M:%S') - $SCRIPT_NAME $SCRIPT_VERSION" >> "$LOG_FILE"
+    echo "=====================================================" >> "$LOG_FILE"
+}
+
+# 增强的日志函数
 log_info() {
-    echo -e "${GREEN}[INFO]${NC} $*"
+    local msg="$*"
+    echo -e "${GREEN}[INFO]${NC} $msg"
+    echo "$(date '+%Y-%m-%d %H:%M:%S') [INFO] $msg" >> "$LOG_FILE"
 }
 
 log_warn() {
-    echo -e "${YELLOW}[WARN]${NC} $*"
+    local msg="$*"
+    echo -e "${YELLOW}[WARN]${NC} $msg"
+    echo "$(date '+%Y-%m-%d %H:%M:%S') [WARN] $msg" >> "$LOG_FILE"
 }
 
 log_error() {
-    echo -e "${RED}[ERROR]${NC} $*"
+    local msg="$*"
+    echo -e "${RED}[ERROR]${NC} $msg"
+    echo "$(date '+%Y-%m-%d %H:%M:%S') [ERROR] $msg" >> "$LOG_FILE"
+}
+
+log_debug() {
+    local msg="$*"
+    echo "$(date '+%Y-%m-%d %H:%M:%S') [DEBUG] $msg" >> "$LOG_FILE"
+}
+
+# 记录函数执行
+log_function_start() {
+    local func_name="$1"
+    log_debug "开始执行函数: $func_name"
+}
+
+log_function_end() {
+    local func_name="$1"
+    local result="$2"
+    log_debug "函数执行完成: $func_name (返回值: $result)"
 }
 
 # 检查root权限
@@ -134,106 +178,90 @@ EOF
 
 # 创建FTP用户 - 简化版
 create_ftp_user() {
+    log_function_start "create_ftp_user"
     local username="$1"
     local password="$2"
     local recording_dir="$3"
     
+    log_debug "创建FTP用户参数: username=$username, recording_dir=$recording_dir"
+    
     # 检查录制目录
     if [[ ! -d "$recording_dir" ]]; then
         log_error "录制目录不存在: $recording_dir"
+        log_function_end "create_ftp_user" "1"
         return 1
     fi
+    log_debug "录制目录检查通过: $recording_dir"
     
     # 检查用户是否已存在
     if id "$username" &>/dev/null; then
         log_warn "用户 $username 已存在，将重新配置"
+        log_debug "删除现有用户: $username"
         userdel -r "$username" 2>/dev/null || true
+        log_debug "用户删除完成"
     fi
     
     # 创建用户，直接使用录制目录作为家目录
-    useradd -d "$recording_dir" -s /bin/bash "$username"
-    log_info "已创建用户: $username (家目录: $recording_dir)"
+    log_debug "执行: useradd -d $recording_dir -s /bin/bash $username"
+    if useradd -d "$recording_dir" -s /bin/bash "$username"; then
+        log_info "已创建用户: $username (家目录: $recording_dir)"
+        log_debug "用户创建成功"
+    else
+        log_error "用户创建失败: $username"
+        log_function_end "create_ftp_user" "1"
+        return 1
+    fi
     
     # 设置密码
-    echo "$username:$password" | chpasswd
-    log_info "已设置用户密码"
+    log_debug "设置用户密码"
+    if echo "$username:$password" | chpasswd; then
+        log_info "已设置用户密码"
+        log_debug "密码设置成功"
+    else
+        log_error "密码设置失败"
+        log_function_end "create_ftp_user" "1"
+        return 1
+    fi
     
     # 设置录制目录权限
+    log_debug "设置录制目录权限"
     # 确保用户可以读写删除
-    chown root:ftp-users "$recording_dir"
-    chmod 775 "$recording_dir"
+    if chown root:ftp-users "$recording_dir" && chmod 775 "$recording_dir"; then
+        log_debug "目录权限设置成功: root:ftp-users 775"
+    else
+        log_error "目录权限设置失败"
+        log_function_end "create_ftp_user" "1"
+        return 1
+    fi
     
     # 创建FTP用户组（用于管理和识别）
     if ! getent group ftp-users >/dev/null; then
-        groupadd ftp-users
-        log_info "已创建 ftp-users 用户组"
+        log_debug "创建ftp-users用户组"
+        if groupadd ftp-users; then
+            log_info "已创建 ftp-users 用户组"
+        else
+            log_error "ftp-users用户组创建失败"
+            log_function_end "create_ftp_user" "1"
+            return 1
+        fi
+    else
+        log_debug "ftp-users用户组已存在"
     fi
-    usermod -a -G ftp-users "$username"
+    
+    log_debug "将用户添加到ftp-users组"
+    if usermod -a -G ftp-users "$username"; then
+        log_debug "用户组添加成功"
+    else
+        log_error "用户组添加失败"
+        log_function_end "create_ftp_user" "1"
+        return 1
+    fi
     
     log_info "FTP用户配置完成 - 用户登录后直接在录制目录 $recording_dir，可以读写删除文件"
+    log_function_end "create_ftp_user" "0"
 }
 
-# 修复FTP权限问题 - 简化版
-fix_ftp_permissions() {
-    echo ""
-    echo "🔧 修复FTP权限问题..."
-    echo ""
-    
-    local fixed=false
-    local recording_dir="/opt/brec/file"
-    
-    # 检查录制目录权限
-    if [[ -d "$recording_dir" ]]; then
-        echo "🔧 修复录制目录权限: $recording_dir"
-        chown root:ftp-users "$recording_dir"
-        chmod 775 "$recording_dir"
-        echo "   ✅ 录制目录权限修复完成"
-        fixed=true
-    fi
-    
-    # 检查FTP用户组中的用户
-    if getent group ftp-users >/dev/null 2>&1; then
-        local ftp_users=$(getent group ftp-users | cut -d: -f4)
-        if [[ -n "$ftp_users" ]]; then
-            echo "🔧 检查FTP用户..."
-            for user in $(echo "$ftp_users" | tr ',' ' '); do
-                if id "$user" &>/dev/null; then
-                    # 确保用户家目录指向录制目录
-                    local user_home=$(getent passwd "$user" | cut -d: -f6)
-                    if [[ "$user_home" != "$recording_dir" ]]; then
-                        echo "   📁 修复用户 $user 家目录: $user_home -> $recording_dir"
-                        usermod -d "$recording_dir" "$user"
-                    fi
-                    echo "   ✅ 用户 $user 配置正确"
-                    fixed=true
-                fi
-            done
-        fi
-    fi
-    
-    if [[ "$fixed" == "true" ]]; then
-        echo ""
-        echo "🔄 重启vsftpd服务..."
-        systemctl restart vsftpd
-        if systemctl is-active --quiet vsftpd; then
-            echo "✅ 服务重启成功"
-        else
-            echo "❌ 服务重启失败"
-        fi
-        echo ""
-        echo "🔍 权限诊断信息："
-        echo "   - vsftpd配置: /etc/vsftpd.conf"
-        echo "   - 录制目录: $recording_dir"
-        echo "   - 目录权限: $(ls -ld "$recording_dir" 2>/dev/null | awk '{print $1, $3, $4}' || echo '未找到')"
-        echo ""
-        echo "🎉 权限修复完成！FTP用户现在可以直接访问录制目录"
-    else
-        echo "ℹ️  未找到需要修复的FTP用户"
-    fi
-    
-    echo ""
-    read -p "按回车键返回主菜单..." -r
-}
+
 
 # 清理已存在用户的配置
 cleanup_existing_user() {
@@ -296,6 +324,99 @@ configure_firewall() {
     fi
 }
 
+# 日志管理功能
+manage_logs() {
+    echo ""
+    echo "======================================================"
+    echo "📝 日志管理"
+    echo "======================================================"
+    echo ""
+    echo "📁 日志文件位置: $LOG_FILE"
+    echo ""
+    
+    if [[ -f "$LOG_FILE" ]]; then
+        local log_size=$(du -h "$LOG_FILE" 2>/dev/null | cut -f1)
+        local log_lines=$(wc -l < "$LOG_FILE" 2>/dev/null)
+        echo "📊 日志信息："
+        echo "   📏 文件大小: $log_size"
+        echo "   📄 行数: $log_lines"
+        echo ""
+    else
+        echo "⚠️ 日志文件不存在"
+        echo ""
+        read -p "按回车键返回主菜单..." -r
+        return
+    fi
+    
+    echo "请选择操作："
+    echo "1) 📖 查看最新20行日志"
+    echo "2) 📖 查看完整日志"
+    echo "3) 🔍 搜索日志内容"
+    echo "4) 🗑️ 清理日志文件"
+    echo "0) ⬅️ 返回主菜单"
+    echo ""
+    read -p "请输入选项 (0-4): " log_choice
+    
+    case $log_choice in
+        1)
+            echo ""
+            echo "📖 最新20行日志："
+            echo "======================================================"
+            tail -20 "$LOG_FILE" 2>/dev/null || echo "❌ 读取日志失败"
+            echo "======================================================"
+            ;;
+        2)
+            echo ""
+            echo "📖 完整日志内容："
+            echo "======================================================"
+            cat "$LOG_FILE" 2>/dev/null || echo "❌ 读取日志失败"
+            echo "======================================================"
+            ;;
+        3)
+            echo ""
+            read -p "🔍 请输入搜索关键词: " search_keyword
+            if [[ -n "$search_keyword" ]]; then
+                echo ""
+                echo "🔍 搜索结果 (关键词: $search_keyword)："
+                echo "======================================================"
+                grep -i "$search_keyword" "$LOG_FILE" 2>/dev/null || echo "❌ 未找到匹配内容"
+                echo "======================================================"
+            else
+                echo "❌ 搜索关键词不能为空"
+            fi
+            ;;
+        4)
+            echo ""
+            echo "⚠️ 确认清理日志文件？"
+            echo "📁 文件: $LOG_FILE"
+            read -p "输入 'YES' 确认清理: " confirm_clean
+            if [[ "$confirm_clean" == "YES" ]]; then
+                if > "$LOG_FILE" 2>/dev/null; then
+                    echo "✅ 日志文件已清理"
+                    log_info "日志文件已被用户手动清理"
+                else
+                    echo "❌ 日志清理失败"
+                fi
+            else
+                echo "❌ 清理已取消"
+            fi
+            ;;
+        0)
+            return
+            ;;
+        *)
+            echo ""
+            echo "❌ 无效选项！"
+            sleep 2
+            manage_logs
+            return
+            ;;
+    esac
+    
+    echo ""
+    read -p "按回车键返回主菜单..." -r
+}
+
 # 生成随机密码
 generate_password() {
     local length=${1:-12}
@@ -322,17 +443,22 @@ get_server_ip() {
 
 # 主安装函数
 install_ftp_lite() {
+    log_function_start "install_ftp_lite"
+    
     echo ""
     echo "======================================================"
     echo "🚀 $SCRIPT_NAME 安装向导 $SCRIPT_VERSION"
     echo "======================================================"
     echo ""
-    echo "💡 轻量版特性："
-    echo "   • 直接目录访问 - 无复杂权限配置"
-    echo "   • 统一录制目录 - 录播姬和FTP共用/opt/brec/file"
-    echo "   • 完全兼容录播姬 - 无任何干扰"
-    echo "   • 简单易用 - 一键部署"
+    echo "📝 日志文件: $LOG_FILE"
     echo ""
+    echo "💡 轻量版特性："
+    echo "   • 🎯 统一目录: 录播姬和FTP共用 /opt/brec/file"
+    echo "   • 🚀 一键部署: 所有配置都有默认值"
+    echo "   • 🛡️ 完全兼容: 不干扰录播姬工作"
+    echo ""
+    
+    log_info "开始安装流程"
     
     # 设置录制目录
     local recording_dir="/opt/brec/file"
@@ -341,33 +467,56 @@ install_ftp_lite() {
     echo ""
     
     # 确认是否继续
-    read -p "🤔 是否继续安装？录播姬需要配置输出到此目录 (y/N): " confirm
+    log_debug "等待用户确认安装"
+    read -p "🤔 是否继续安装？录播姬需要配置输出到此目录 (Y/n): " confirm
+    confirm=${confirm:-Y}
+    log_debug "用户输入: $confirm"
     if [[ ! "$confirm" =~ ^[Yy]$ ]]; then
         echo "❌ 安装已取消"
+        log_info "用户取消安装"
+        log_function_end "install_ftp_lite" "0"
         return 0
     fi
+    log_info "用户确认继续安装"
     
     # 检查并创建录制目录
+    log_debug "检查录制目录: $recording_dir"
     if [[ ! -d "$recording_dir" ]]; then
         echo "📁 创建录制目录: $recording_dir"
-        mkdir -p "$recording_dir"
-        log_info "已创建录制目录: $recording_dir"
+        log_debug "执行: mkdir -p $recording_dir"
+        if mkdir -p "$recording_dir"; then
+            log_info "已创建录制目录: $recording_dir"
+        else
+            log_error "创建录制目录失败: $recording_dir"
+            log_function_end "install_ftp_lite" "1"
+            return 1
+        fi
     else
         echo "✅ 录制目录已存在: $recording_dir"
+        log_debug "录制目录已存在: $recording_dir"
     fi
     
     # 获取FTP用户名
-    read -p "👤 请输入FTP用户名 (默认: sunny): " ftp_user
+    log_debug "获取FTP用户名"
+    read -p "👤 FTP用户名 (默认: sunny，直接回车使用默认): " ftp_user
     ftp_user=${ftp_user:-sunny}
+    echo "✅ 使用FTP用户名: $ftp_user"
+    log_debug "FTP用户名: $ftp_user"
     
     # 生成密码
-    read -p "🔐 自动生成密码？(Y/n): " auto_pwd
+    log_debug "获取FTP密码配置"
+    read -p "🔐 自动生成密码？(Y/n，直接回车自动生成): " auto_pwd
     auto_pwd=${auto_pwd:-Y}
+    log_debug "密码生成选择: $auto_pwd"
     
     if [[ "$auto_pwd" =~ ^[Yy]$ ]]; then
+        log_debug "自动生成密码"
         ftp_password=$(generate_password 12)
+        echo "✅ 已自动生成12位密码"
         log_info "已自动生成密码"
+        log_debug "密码长度: ${#ftp_password}"
     else
+        log_debug "手动输入密码"
         while true; do
             read -s -p "请输入FTP密码: " ftp_password
             echo ""
@@ -375,9 +524,11 @@ install_ftp_lite() {
             echo ""
             
             if [[ "$ftp_password" == "$ftp_password2" ]]; then
+                log_debug "密码确认成功"
                 break
             else
                 log_error "密码不匹配，请重新输入"
+                log_debug "密码不匹配，重新输入"
             fi
         done
     fi
@@ -392,13 +543,17 @@ install_ftp_lite() {
     echo "   📁 用户权限: 可以读取、写入、删除文件"
     echo ""
     
+    log_debug "等待用户最终确认"
     read -p "确认开始安装？(Y/n): " confirm
     confirm=${confirm:-Y}
+    log_debug "最终确认: $confirm"
     
     if [[ ! "$confirm" =~ ^[Yy]$ ]]; then
-        log_info "安装取消"
+        log_info "用户取消安装"
+        log_function_end "install_ftp_lite" "1"
         return 1
     fi
+    log_info "用户确认开始安装"
     
     # 开始安装
     echo ""
@@ -406,54 +561,89 @@ install_ftp_lite() {
     
     # 检查网络
     echo "🌐 检查网络连接..."
-    check_network
+    log_debug "开始网络检查"
+    if check_network; then
+        log_debug "网络检查通过"
+    else
+        log_warn "网络检查失败，但继续安装"
+    fi
     
     # 安装vsftpd
     echo "📦 步骤1/5: 安装vsftpd..."
-    log_info "正在安装 vsftpd..."
+    log_info "开始安装 vsftpd"
+    log_debug "调用 install_vsftpd 函数"
     if ! install_vsftpd; then
         log_error "vsftpd 安装失败"
         echo "❌ 安装步骤失败，请检查网络连接和权限"
+        echo "📝 详细日志请查看: $LOG_FILE"
         read -p "按回车键返回主菜单..." -r
+        log_function_end "install_ftp_lite" "1"
         return 1
     fi
     echo "✅ vsftpd 安装完成"
+    log_info "vsftpd 安装成功"
     
     # 创建FTP用户
     echo "👤 步骤2/5: 创建FTP用户..."
-    log_info "正在配置FTP用户..."
+    log_info "开始配置FTP用户: $ftp_user"
+    log_debug "调用 create_ftp_user 函数，参数: user=$ftp_user, dir=$recording_dir"
     if ! create_ftp_user "$ftp_user" "$ftp_password" "$recording_dir"; then
         log_error "FTP用户配置失败"
         echo "❌ 用户配置失败"
+        echo "📝 详细日志请查看: $LOG_FILE"
         read -p "按回车键返回主菜单..." -r
+        log_function_end "install_ftp_lite" "1"
         return 1
     fi
     echo "✅ FTP用户创建完成"
+    log_info "FTP用户创建成功: $ftp_user"
     
     # 生成配置
     echo "⚙️ 步骤3/5: 生成配置文件..."
-    log_info "正在生成配置文件..."
-    generate_vsftpd_config
-    echo "✅ 配置文件生成完成"
+    log_info "开始生成vsftpd配置文件"
+    log_debug "调用 generate_vsftpd_config 函数"
+    if generate_vsftpd_config; then
+        echo "✅ 配置文件生成完成"
+        log_info "vsftpd配置文件生成成功"
+    else
+        log_error "配置文件生成失败"
+        echo "❌ 配置文件生成失败"
+        echo "📝 详细日志请查看: $LOG_FILE"
+        read -p "按回车键返回主菜单..." -r
+        log_function_end "install_ftp_lite" "1"
+        return 1
+    fi
     
     # 配置防火墙
     echo "🔥 步骤4/5: 配置防火墙..."
-    configure_firewall
-    echo "✅ 防火墙配置完成"
+    log_info "开始配置防火墙"
+    log_debug "调用 configure_firewall 函数"
+    if configure_firewall; then
+        echo "✅ 防火墙配置完成"
+        log_info "防火墙配置成功"
+    else
+        log_warn "防火墙配置失败，但继续安装"
+    fi
     
     # 启动服务
     echo "🚀 步骤5/5: 启动服务..."
-    log_info "正在启动服务..."
+    log_info "开始启动服务"
+    log_debug "调用 start_services 函数"
     if ! start_services; then
         log_error "服务启动失败"
         echo "❌ 服务启动失败"
+        echo "📝 详细日志请查看: $LOG_FILE"
         read -p "按回车键返回主菜单..." -r
+        log_function_end "install_ftp_lite" "1"
         return 1
     fi
     echo "✅ 服务启动完成"
+    log_info "服务启动成功"
     
     # 获取服务器IP
+    log_debug "获取服务器IP地址"
     local server_ip=$(get_server_ip)
+    log_debug "服务器IP: $server_ip"
     
     # 显示安装结果
     echo ""
@@ -461,6 +651,9 @@ install_ftp_lite() {
     echo "🎉 $SCRIPT_NAME 安装完成！"
     echo "======================================================"
     echo ""
+    log_info "安装流程全部完成"
+    log_info "服务器IP: $server_ip, FTP用户: $ftp_user, 录制目录: $recording_dir"
+    
     echo "📋 连接信息："
     echo "   🌐 服务器地址: $server_ip"
     echo "   🔌 FTP端口: 21"
@@ -483,7 +676,82 @@ install_ftp_lite() {
     echo "   • 查看服务状态: sudo systemctl status vsftpd"
     echo "   • 重新运行脚本: sudo $0"
     echo ""
+    echo "📝 日志文件: $LOG_FILE"
+    echo ""
     
+    log_function_end "install_ftp_lite" "0"
+    read -p "按回车键返回主菜单..." -r
+}
+
+# 停止FTP服务
+stop_ftp_service() {
+    echo ""
+    echo "======================================================"
+    echo "⏹️ 停止FTP服务"
+    echo "======================================================"
+    echo ""
+    
+    # 检查当前状态
+    if ! systemctl is-active --quiet vsftpd; then
+        echo "ℹ️ vsftpd服务已经停止"
+        echo ""
+        read -p "按回车键返回主菜单..." -r
+        return 0
+    fi
+    
+    echo "🔄 正在停止vsftpd服务..."
+    echo ""
+    
+    # 停止服务
+    if systemctl stop vsftpd; then
+        echo "✅ vsftpd服务停止成功"
+        echo "🔴 服务状态: 已停止"
+    else
+        echo "❌ vsftpd服务停止失败"
+        echo ""
+        echo "📊 当前状态："
+        systemctl status vsftpd --no-pager -l | head -5
+    fi
+    
+    echo ""
+    read -p "按回车键返回主菜单..." -r
+}
+
+# 列出所有用户
+list_users() {
+    echo ""
+    echo "======================================================"
+    echo "📋 FTP用户列表"
+    echo "======================================================"
+    echo ""
+    
+    local recording_dir="/opt/brec/file"
+    local ftp_users_found=false
+    
+    # 检查FTP用户（通过ftp-users组）
+    if getent group ftp-users >/dev/null 2>&1; then
+        local ftp_users=$(getent group ftp-users | cut -d: -f4)
+        if [[ -n "$ftp_users" ]]; then
+            echo "👥 FTP用户："
+            for username in $(echo "$ftp_users" | tr ',' ' '); do
+                if id "$username" &>/dev/null; then
+                    echo "   👤 $username"
+                    echo "      📁 家目录: $recording_dir"
+                    echo "      📁 录制目录: $recording_dir"
+                    echo "      🔗 访问状态: 直接访问（无映射）"
+                    echo ""
+                    ftp_users_found=true
+                fi
+            done
+        fi
+    fi
+    
+    if [[ "$ftp_users_found" == "false" ]]; then
+        echo "❌ 未找到FTP用户"
+        echo "💡 请先使用菜单选项1进行安装配置"
+    fi
+    
+    echo ""
     read -p "按回车键返回主菜单..." -r
 }
 
@@ -603,9 +871,9 @@ add_user() {
     echo "➕ 添加新用户"
     echo ""
     
-    read -p "👤 请输入新用户名: " new_username
+    read -p "👤 新用户名 (直接回车取消): " new_username
     if [[ -z "$new_username" ]]; then
-        log_error "用户名不能为空"
+        echo "❌ 用户名不能为空，已取消"
         read -p "按回车键返回..." -r
         return 1
     fi
@@ -1450,30 +1718,47 @@ main_menu() {
         echo "💡 轻量版特性: 直接目录访问 + 零资源消耗 + 完全兼容录播姬"
         echo "📁 录制目录: /opt/brec/file (录播姬和FTP共用)"
         echo ""
-        echo "请选择操作："
-        echo "1) 🚀 安装/配置FTP服务 (统一目录)"
-        echo "2) 📊 查看服务状态"
-        echo "3) ▶️ 启动FTP服务"
-        echo "4) ⏹️ 停止FTP服务"
-        echo "5) 🔄 重启FTP服务"
-        echo "6) 👥 用户管理 (添加/删除/改密码)"
-        echo "7) 🔧 修复FTP权限问题 (目录权限)"
-        echo "8) 🔄 在线更新脚本"
-        echo "9) 🗑️ 卸载FTP服务"
-        echo "0) 🚪 退出"
+            echo "请选择操作："
+    echo ""
+    echo "📦 安装与配置："
+    echo "1) 🚀 安装FTP服务"
+    echo ""
+    echo "🔧 服务管理："
+    echo "2) 📊 查看服务状态"
+    echo "3) ▶️ 启动FTP服务"
+    echo "4) ⏹️ 停止FTP服务"
+    echo "5) 🔄 重启FTP服务"
+    echo ""
+    echo "👥 用户管理："
+    echo "6) 📋 列出所有用户"
+    echo "7) ➕ 添加新用户"
+    echo "8) 🔐 修改用户密码"
+    echo "9) 🗑️ 删除用户"
+    echo ""
+    echo "🛠️ 系统功能："
+    echo "10) 📝 查看日志"
+    echo "11) 🧹 清理日志"
+    echo "12) 🔄 在线更新"
+    echo "13) 🗑️ 卸载服务"
+    echo ""
+    echo "0) 🚪 退出"
         echo ""
         echo "📝 快捷键： Ctrl+C 快速退出"
         echo ""
-        echo "💡 使用提示："
-        echo "   • 首次使用请选择 1) 安装配置"
-        echo "   • 录播姬输出目录设为: /opt/brec/file"
-        echo "   • 安装后FTP用户可直接访问录制文件"
+            echo "💡 使用提示："
+    echo "   • 首次使用: 选择 1) 安装FTP服务"
+    echo "   • 录播姬输出目录: /opt/brec/file"
+    echo "   • 所有选项都有默认值，直接回车即可"
         echo ""
-        read -p "请输入选项 (0-9): " choice
+        read -p "请输入选项 (0-13): " choice
         
         case $choice in
             1) install_ftp_lite ;;
-            2) show_status ;;
+            2) 
+                show_status
+                echo ""
+                read -p "按回车键返回主菜单..." -r
+                ;;
             3) start_ftp_service ;;
             4) stop_ftp_service ;;
             5) 
@@ -1488,10 +1773,39 @@ main_menu() {
                 echo ""
                 read -p "按回车键返回主菜单..." -r
                 ;;
-            6) manage_users ;;
-            7) fix_ftp_permissions ;;
-            8) update_script ;;
-            9) uninstall_service ;;
+            6) list_users ;;
+            7) add_user ;;
+            8) change_password ;;
+            9) delete_user ;;
+            10) 
+                echo ""
+                echo "📖 查看最新20行日志："
+                echo "======================================================"
+                tail -20 "$LOG_FILE" 2>/dev/null || echo "❌ 读取日志失败"
+                echo "======================================================"
+                echo ""
+                read -p "按回车键返回主菜单..." -r
+                ;;
+            11) 
+                echo ""
+                echo "⚠️ 确认清理日志文件？"
+                echo "📁 文件: $LOG_FILE"
+                read -p "输入 'YES' 确认清理: " confirm_clean
+                if [[ "$confirm_clean" == "YES" ]]; then
+                    if > "$LOG_FILE" 2>/dev/null; then
+                        echo "✅ 日志文件已清理"
+                        log_info "日志文件已被用户手动清理"
+                    else
+                        echo "❌ 日志清理失败"
+                    fi
+                else
+                    echo "❌ 清理已取消"
+                fi
+                echo ""
+                read -p "按回车键返回主菜单..." -r
+                ;;
+            12) update_script ;;
+            13) uninstall_service ;;
             0) 
                 echo ""
                 echo "👋 感谢使用 $SCRIPT_NAME！"
@@ -1499,7 +1813,7 @@ main_menu() {
                 ;;
             *) 
                 echo ""
-                echo "❌ 无效选项！请输入 0-9 之间的数字"
+                echo "❌ 无效选项！请输入 0-13 之间的数字"
                 echo "ℹ️  提示：输入数字后按回车键确认"
                 sleep 2
                 ;;
@@ -1523,23 +1837,19 @@ main() {
     # 检查root权限
     check_root
     
+    # 初始化日志系统
+    init_logging
+    
     # 显示欢迎信息
     echo "======================================================"
     echo "🚀 欢迎使用 $SCRIPT_NAME $SCRIPT_VERSION"
     echo "======================================================"
     echo ""
-    echo "💡 轻量版专为录播姬用户设计："
-    echo "   • 📁 统一目录访问技术"
-    echo "   • 🚀 零延迟文件访问"
-    echo "   • 🛡️ 完全兼容录播姬，无任何干扰"
-    echo "   • 💾 零系统资源消耗"
-    echo "   • 🔧 无复杂权限配置"
-    echo ""
-    echo "📖 与完整版对比："
-    echo "   • ❌ 无实时同步服务（避免录播干扰）"
-    echo "   • ✅ 保留核心FTP功能"
-    echo "   • ✅ 简单易用，一键部署"
-    echo "   • ✅ 使用标准目录结构"
+    echo "💡 专为录播姬设计的轻量版FTP："
+    echo "   • 🎯 录播姬和FTP共用统一目录"
+    echo "   • 🚀 一键部署，全程默认配置"
+    echo "   • 🛡️ 零干扰，完全兼容录播姬"
+    echo "   • 💾 无后台服务，零资源消耗"
     echo ""
     
     read -p "按回车键进入主菜单..." -r
