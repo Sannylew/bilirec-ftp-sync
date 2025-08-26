@@ -223,18 +223,7 @@ create_ftp_user() {
         return 1
     fi
     
-    # 设置录制目录权限
-    log_debug "设置录制目录权限"
-    # 确保用户可以读写删除
-    if chown root:ftp-users "$recording_dir" && chmod 775 "$recording_dir"; then
-        log_debug "目录权限设置成功: root:ftp-users 775"
-    else
-        log_error "目录权限设置失败"
-        log_function_end "create_ftp_user" "1"
-        return 1
-    fi
-    
-    # 创建FTP用户组（用于管理和识别）
+    # 创建FTP用户组（用于管理和识别）- 必须先创建组
     if ! getent group ftp-users >/dev/null; then
         log_debug "创建ftp-users用户组"
         if groupadd ftp-users; then
@@ -253,6 +242,17 @@ create_ftp_user() {
         log_debug "用户组添加成功"
     else
         log_error "用户组添加失败"
+        log_function_end "create_ftp_user" "1"
+        return 1
+    fi
+    
+    # 设置录制目录权限 - 在创建用户组后执行
+    log_debug "设置录制目录权限"
+    # 确保用户可以读写删除
+    if chown root:ftp-users "$recording_dir" && chmod 775 "$recording_dir"; then
+        log_debug "目录权限设置成功: root:ftp-users 775"
+    else
+        log_error "目录权限设置失败"
         log_function_end "create_ftp_user" "1"
         return 1
     fi
