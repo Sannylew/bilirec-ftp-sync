@@ -1972,19 +1972,72 @@ test_realtime_sync() {
 
 # 在线更新脚本
 update_script() {
+    while true; do
+        clear
+        echo "======================================================"
+        echo "🔄 BRCE FTP脚本在线更新"
+        echo "======================================================"
+        echo ""
+        echo "请选择更新方式："
+        echo "1) 🔍 检查更新 (智能更新)"
+        echo "2) ⚡ 强制更新 (直接覆盖)"
+        echo "3) 📋 查看更新历史"
+        echo "0) ⬅️ 返回主菜单"
+        echo ""
+        echo "💡 说明："
+        echo "   • 智能更新: 比较版本和内容，仅在有差异时更新"
+        echo "   • 强制更新: 无条件从GitHub获取最新代码"
+        echo "   • 更新历史: 查看最近的GitHub提交记录"
+        echo ""
+        read -p "请输入选项 (0-3): " update_choice
+        
+        case $update_choice in
+            1)
+                perform_smart_update
+                echo ""
+                read -p "按回车键返回更新菜单..." -r
+                ;;
+            2)
+                perform_force_update
+                echo ""
+                read -p "按回车键返回更新菜单..." -r
+                ;;
+            3)
+                show_update_history
+                echo ""
+                read -p "按回车键返回更新菜单..." -r
+                ;;
+            0)
+                break
+                ;;
+            *)
+                echo ""
+                echo "❌ 无效选项！请输入 0-3 之间的数字"
+                sleep 2
+                ;;
+        esac
+    done
+}
+
+# 智能更新功能
+perform_smart_update() {
     echo ""
-    echo "======================================================"
-    echo "🔄 BRCE FTP脚本在线更新"
+    echo "🔍 开始智能更新检查..."
     echo "======================================================"
     
-    SCRIPT_URL="https://raw.githubusercontent.com/Sannylew/bilirec-ftp-sync/main/ftp-setup.sh"
+    # 支持多个可能的URL
+    local SCRIPT_URLS=(
+        "https://raw.githubusercontent.com/Sannylew/bilirec-ftp-sync/main/ftp-setup.sh"
+        "https://raw.githubusercontent.com/Sannylew/bilirec-ftp-sync/master/ftp-setup.sh"
+    )
+    
     CURRENT_SCRIPT="$(readlink -f "$0")"
     TEMP_SCRIPT="/tmp/brce_ftp_setup_new.sh"
     BACKUP_SCRIPT="${CURRENT_SCRIPT}.backup.$(date +%Y%m%d_%H%M%S)"
     
     echo "📋 更新信息："
     echo "   - 当前脚本: $CURRENT_SCRIPT"
-    echo "   - 远程地址: $SCRIPT_URL"
+    echo "   - 远程仓库: https://github.com/Sannylew/bilirec-ftp-sync"
     echo "   - 备份位置: $BACKUP_SCRIPT"
     echo ""
     
@@ -1993,40 +2046,108 @@ update_script() {
         return 1
     fi
     
-    # 下载最新版本
+    # 尝试从多个URL下载最新版本
     echo "📥 下载最新版本..."
-    if ! retry_operation 3 5 "下载脚本" curl -s --max-time 30 "$SCRIPT_URL" -o "$TEMP_SCRIPT"; then
-        echo "❌ 下载失败，请稍后重试"
+    local download_success=false
+    local used_url=""
+    
+    for url in "${SCRIPT_URLS[@]}"; do
+        echo "🔄 尝试从: $url"
+        if curl -s --max-time 30 "$url" -o "$TEMP_SCRIPT" 2>/dev/null; then
+            if [[ -f "$TEMP_SCRIPT" && -s "$TEMP_SCRIPT" ]]; then
+                # 检查是否是有效的shell脚本
+                if head -1 "$TEMP_SCRIPT" | grep -q "#!/bin/bash"; then
+                    download_success=true
+                    used_url="$url"
+                    echo "✅ 下载成功"
+                    break
+                fi
+            fi
+        fi
+        echo "❌ 此URL下载失败，尝试下一个..."
+    done
+    
+    if [[ "$download_success" != "true" ]]; then
+        echo "❌ 所有URL下载失败，请检查网络连接或稍后重试"
+        echo "💡 您也可以手动从GitHub下载最新版本："
+        echo "   https://github.com/Sannylew/bilirec-ftp-sync"
+        rm -f "$TEMP_SCRIPT"
         return 1
     fi
     
-    # 检查下载的文件
+    echo "📡 使用的下载地址: $used_url"
+    
+    # 验证下载的文件
     if [ ! -f "$TEMP_SCRIPT" ] || [ ! -s "$TEMP_SCRIPT" ]; then
         echo "❌ 下载的文件无效"
         rm -f "$TEMP_SCRIPT"
         return 1
     fi
-    echo "✅ 下载完成"
+    echo "✅ 下载验证通过"
     
     # 提取版本信息
-    CURRENT_VERSION=$(grep "# 版本:" "$CURRENT_SCRIPT" | head -1 | sed 's/.*版本: *//' | sed 's/ .*//')
-    NEW_VERSION=$(grep "# 版本:" "$TEMP_SCRIPT" | head -1 | sed 's/.*版本: *//' | sed 's/ .*//')
+    CURRENT_VERSION=$(grep "# 版本:" "$CURRENT_SCRIPT" | head -1 | sed 's/.*版本: *//' | sed 's/ .*//' 2>/dev/null || echo "未知")
+    NEW_VERSION=$(grep "# 版本:" "$TEMP_SCRIPT" | head -1 | sed 's/.*版本: *//' | sed 's/ .*//' 2>/dev/null || echo "未知")
+    
+    # 计算文件内容差异
+    local content_changed=false
+    if ! diff -q "$CURRENT_SCRIPT" "$TEMP_SCRIPT" >/dev/null 2>&1; then
+        content_changed=true
+    fi
+    
+    # 获取文件大小和修改时间信息
+    local current_size=$(wc -c < "$CURRENT_SCRIPT" 2>/dev/null || echo "0")
+    local new_size=$(wc -c < "$TEMP_SCRIPT" 2>/dev/null || echo "0")
+    local current_lines=$(wc -l < "$CURRENT_SCRIPT" 2>/dev/null || echo "0")
+    local new_lines=$(wc -l < "$TEMP_SCRIPT" 2>/dev/null || echo "0")
     
     echo ""
-    echo "📊 版本对比："
-    echo "   - 当前版本: ${CURRENT_VERSION:-"未知"}"
-    echo "   - 最新版本: ${NEW_VERSION:-"未知"}"
+    echo "📊 版本和内容对比："
+    echo "   - 当前版本: $CURRENT_VERSION"
+    echo "   - 最新版本: $NEW_VERSION"
+    echo "   - 当前文件: $current_lines 行, $current_size 字节"
+    echo "   - 远程文件: $new_lines 行, $new_size 字节"
+    
+    if [[ "$content_changed" == "true" ]]; then
+        echo "   - 📝 文件内容: 有差异 (建议更新)"
+    else
+        echo "   - ✅ 文件内容: 完全相同"
+    fi
     echo ""
     
-    # 版本比较
-    if [ "$CURRENT_VERSION" = "$NEW_VERSION" ] && [ -n "$CURRENT_VERSION" ]; then
-        echo "ℹ️  您已经是最新版本！"
-        read -p "是否强制更新？(y/N): " force_update
-        if [[ ! "$force_update" =~ ^[Yy]$ ]]; then
-            echo "✅ 保持当前版本"
-            rm -f "$TEMP_SCRIPT"
-            return 0
+    # 智能更新判断
+    local should_update=false
+    local update_reason=""
+    
+    if [[ "$content_changed" == "true" ]]; then
+        should_update=true
+        if [[ "$CURRENT_VERSION" != "$NEW_VERSION" ]]; then
+            update_reason="发现新版本和内容变更"
+        else
+            update_reason="发现内容变更 (版本号相同但代码已更新)"
         fi
+    elif [[ "$CURRENT_VERSION" != "$NEW_VERSION" ]] && [[ "$NEW_VERSION" != "未知" ]]; then
+        should_update=true
+        update_reason="发现新版本"
+    fi
+    
+    if [[ "$should_update" == "true" ]]; then
+        echo "🆕 $update_reason"
+        echo "💡 建议进行更新以获取最新功能和修复"
+        echo ""
+        read -p "🔄 确定要更新吗？(Y/n): " confirm_update
+        confirm_update=${confirm_update:-Y}  # 默认为Y
+    else
+        echo "ℹ️  当前脚本已是最新版本 (版本和内容均相同)"
+        echo ""
+        read -p "是否强制更新？(y/N): " confirm_update
+        confirm_update=${confirm_update:-N}  # 默认为N
+    fi
+    
+    if [[ ! "$confirm_update" =~ ^[Yy]$ ]]; then
+        echo "✅ 取消更新，保持当前版本"
+        rm -f "$TEMP_SCRIPT"
+        return 0
     fi
     
     # 显示更新日志（如果有的话）
@@ -2122,14 +2243,18 @@ update_script() {
     echo "🎉 更新完成"
     echo ""
     echo "📋 更新摘要："
-    echo "   - 原版: ${CURRENT_VERSION:-"未知"}"
-    echo "   - 新版: ${NEW_VERSION:-"未知"}"
+    echo "   - 原版本: $CURRENT_VERSION"
+    echo "   - 新版本: $NEW_VERSION"
+    echo "   - 文件变化: $current_lines → $new_lines 行"
+    echo "   - 大小变化: $current_size → $new_size 字节"
     echo "   - 备份文件: $BACKUP_SCRIPT"
+    echo "   - 更新原因: $update_reason"
     echo ""
     echo "💡 提示："
+    echo "   - 更新已生效，所有修改已保存"
     echo "   - 如果有问题，可以恢复备份: cp $BACKUP_SCRIPT $CURRENT_SCRIPT"
     echo "   - 建议运行菜单选项2检查服务状态"
-    echo "   - 建议运行菜单选项4测试功能"
+    echo "   - 建议运行菜单选项6查看日志确认更新"
     echo ""
     
     read -p "🔄 是否立即重新启动脚本？(y/N): " restart_script
@@ -2137,6 +2262,145 @@ update_script() {
         echo "🚀 重新启动脚本..."
         exec "$CURRENT_SCRIPT"
     fi
+}
+
+# 强制更新功能
+perform_force_update() {
+    echo ""
+    echo "⚡ 开始强制更新..."
+    echo "======================================================"
+    echo ""
+    echo "⚠️  强制更新将："
+    echo "   • 无条件下载GitHub最新代码"
+    echo "   • 覆盖当前脚本文件"
+    echo "   • 自动备份当前版本"
+    echo ""
+    read -p "确认执行强制更新？(y/N): " confirm_force
+    
+    if [[ ! "$confirm_force" =~ ^[Yy]$ ]]; then
+        echo "✅ 取消强制更新"
+        return 0
+    fi
+    
+    # 使用相同的下载逻辑，但跳过版本检查
+    local SCRIPT_URLS=(
+        "https://raw.githubusercontent.com/Sannylew/bilirec-ftp-sync/main/ftp-setup.sh"
+        "https://raw.githubusercontent.com/Sannylew/bilirec-ftp-sync/master/ftp-setup.sh"
+    )
+    
+    local CURRENT_SCRIPT="$(readlink -f "$0")"
+    local TEMP_SCRIPT="/tmp/brce_ftp_setup_force.sh"
+    local BACKUP_SCRIPT="${CURRENT_SCRIPT}.backup.force.$(date +%Y%m%d_%H%M%S)"
+    
+    echo "📥 强制下载最新版本..."
+    local download_success=false
+    local used_url=""
+    
+    for url in "${SCRIPT_URLS[@]}"; do
+        echo "🔄 尝试从: $url"
+        if curl -s --max-time 30 "$url" -o "$TEMP_SCRIPT" 2>/dev/null; then
+            if [[ -f "$TEMP_SCRIPT" && -s "$TEMP_SCRIPT" ]]; then
+                if head -1 "$TEMP_SCRIPT" | grep -q "#!/bin/bash"; then
+                    download_success=true
+                    used_url="$url"
+                    echo "✅ 下载成功"
+                    break
+                fi
+            fi
+        fi
+        echo "❌ 此URL下载失败，尝试下一个..."
+    done
+    
+    if [[ "$download_success" != "true" ]]; then
+        echo "❌ 强制更新失败：无法下载最新版本"
+        rm -f "$TEMP_SCRIPT"
+        return 1
+    fi
+    
+    # 创建备份
+    echo "💾 创建备份..."
+    if ! cp "$CURRENT_SCRIPT" "$BACKUP_SCRIPT"; then
+        echo "❌ 备份失败"
+        rm -f "$TEMP_SCRIPT"
+        return 1
+    fi
+    
+    # 验证下载的脚本
+    echo "🔍 验证脚本语法..."
+    if ! bash -n "$TEMP_SCRIPT"; then
+        echo "❌ 下载的脚本语法错误"
+        rm -f "$TEMP_SCRIPT"
+        return 1
+    fi
+    
+    # 执行强制更新
+    echo "⚡ 执行强制更新..."
+    if ! cp "$TEMP_SCRIPT" "$CURRENT_SCRIPT"; then
+        echo "❌ 更新失败，恢复备份"
+        cp "$BACKUP_SCRIPT" "$CURRENT_SCRIPT"
+        rm -f "$TEMP_SCRIPT"
+        return 1
+    fi
+    
+    chmod +x "$CURRENT_SCRIPT"
+    rm -f "$TEMP_SCRIPT"
+    
+    echo ""
+    echo "🎉 强制更新完成！"
+    echo "======================================================"
+    echo "   • 已从GitHub获取最新代码"
+    echo "   • 备份文件: $BACKUP_SCRIPT"
+    echo "   • 使用的URL: $used_url"
+    echo ""
+    echo "💡 建议重新启动脚本以应用更新"
+}
+
+# 查看更新历史
+show_update_history() {
+    echo ""
+    echo "📋 查看GitHub更新历史"
+    echo "======================================================"
+    
+    echo "🌐 正在获取最近的提交记录..."
+    
+    # 尝试获取GitHub API信息
+    local api_url="https://api.github.com/repos/Sannylew/bilirec-ftp-sync/commits"
+    local temp_commits="/tmp/github_commits.json"
+    
+    if curl -s --max-time 10 "$api_url?per_page=5" -o "$temp_commits" 2>/dev/null; then
+        if [[ -f "$temp_commits" && -s "$temp_commits" ]]; then
+            echo "✅ 获取成功"
+            echo ""
+            echo "📝 最近5次提交记录："
+            echo "======================================================"
+            
+            # 简单解析JSON (如果有jq更好，但这里用基础工具)
+            local commit_count=0
+            while read -r line && [[ $commit_count -lt 5 ]]; do
+                if [[ "$line" =~ \"message\".*:.*\"([^\"]+)\" ]]; then
+                    local message="${BASH_REMATCH[1]}"
+                    echo "$((commit_count + 1)). $message"
+                    ((commit_count++))
+                fi
+            done < "$temp_commits"
+            
+            if [[ $commit_count -eq 0 ]]; then
+                echo "📄 无法解析提交信息，请直接访问GitHub查看"
+            fi
+            
+            rm -f "$temp_commits"
+        else
+            echo "❌ 获取失败：响应文件无效"
+        fi
+    else
+        echo "❌ 获取失败：网络连接问题"
+    fi
+    
+    echo ""
+    echo "🔗 直接访问链接："
+    echo "   • GitHub仓库: https://github.com/Sannylew/bilirec-ftp-sync"
+    echo "   • 提交历史: https://github.com/Sannylew/bilirec-ftp-sync/commits"
+    echo "   • 最新版本: https://github.com/Sannylew/bilirec-ftp-sync/blob/main/ftp-setup.sh"
 }
 
 # 卸载FTP服务 - 修复变量未初始化问题
