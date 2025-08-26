@@ -115,6 +115,8 @@ local_enable=YES
 write_enable=YES
 delete_enable=YES
 local_umask=022
+file_open_mode=0666
+allow_writeable_chroot=YES
 dirmessage_enable=YES
 use_localtime=YES
 xferlog_enable=YES
@@ -182,8 +184,17 @@ create_ftp_user() {
     
     # 设置源目录权限，确保FTP用户可以写入
     chmod 755 "$source_dir"
-    chgrp ftp-users "$source_dir" 2>/dev/null || true
-    chmod g+w "$source_dir" 2>/dev/null || true
+    
+    # 确保FTP用户对源目录有完整权限
+    chown root:ftp-users "$source_dir" 2>/dev/null || true
+    chmod 775 "$source_dir" 2>/dev/null || true
+    
+    # 设置ftp目录权限
+    chown "$username:ftp-users" "$ftp_home"
+    chmod 755 "$ftp_home"
+    
+    # 确保父目录可访问
+    chmod 755 "/home/$username" 2>/dev/null || true
     
     # 添加到fstab以实现开机自动挂载
     local fstab_entry="$source_dir $ftp_home none bind 0 0"
@@ -200,6 +211,57 @@ create_ftp_user() {
     usermod -a -G ftp-users "$username"
     
     log_info "FTP用户配置完成 - 用户登录后直接在 $ftp_home，可以读写删除源目录内容"
+}
+
+# 修复FTP权限问题
+fix_ftp_permissions() {
+    echo ""
+    echo "🔧 修复FTP权限问题..."
+    echo ""
+    
+    local fixed=false
+    
+    # 检查所有FTP用户目录
+    for user_home in /home/*/ftp; do
+        if [[ -d "$user_home" ]]; then
+            local username=$(basename $(dirname "$user_home"))
+            echo "🔧 修复用户 $username 的权限..."
+            
+            # 修复用户目录权限
+            chown "$username:ftp-users" "$user_home"
+            chmod 755 "$user_home"
+            chmod 755 "/home/$username"
+            
+            # 如果有挂载点，修复源目录权限
+            if mountpoint -q "$user_home"; then
+                local source_dir=$(findmnt -n -o SOURCE "$user_home")
+                echo "   📁 修复源目录权限: $source_dir"
+                chmod 775 "$source_dir"
+                chown root:ftp-users "$source_dir" 2>/dev/null || true
+            fi
+            
+            echo "   ✅ 用户 $username 权限修复完成"
+            fixed=true
+        fi
+    done
+    
+    if [[ "$fixed" == "true" ]]; then
+        echo ""
+        echo "🔄 重启vsftpd服务..."
+        systemctl restart vsftpd
+        if systemctl is-active --quiet vsftpd; then
+            echo "✅ 服务重启成功"
+        else
+            echo "❌ 服务重启失败"
+        fi
+        echo ""
+        echo "🎉 权限修复完成！请重新尝试FTP操作"
+    else
+        echo "ℹ️  未找到需要修复的FTP用户"
+    fi
+    
+    echo ""
+    read -p "按回车键返回主菜单..." -r
 }
 
 # 清理已存在用户的配置
@@ -1302,13 +1364,14 @@ main_menu() {
         echo "4) ⏹️ 停止FTP服务"
         echo "5) 🔄 重启FTP服务"
         echo "6) 👥 用户管理 (添加/删除/改密码)"
-        echo "7) 🔄 在线更新脚本"
-        echo "8) 🗑️ 卸载FTP服务"
+        echo "7) 🔧 修复FTP权限问题 (解决550错误)"
+        echo "8) 🔄 在线更新脚本"
+        echo "9) 🗑️ 卸载FTP服务"
         echo "0) 🚪 退出"
         echo ""
         echo "📝 快捷键： Ctrl+C 快速退出"
         echo ""
-        read -p "请输入选项 (0-8): " choice
+        read -p "请输入选项 (0-9): " choice
         
         case $choice in
             1) install_ftp_lite ;;
@@ -1328,8 +1391,9 @@ main_menu() {
                 read -p "按回车键返回主菜单..." -r
                 ;;
             6) manage_users ;;
-            7) update_script ;;
-            8) uninstall_service ;;
+            7) fix_ftp_permissions ;;
+            8) update_script ;;
+            9) uninstall_service ;;
             0) 
                 echo ""
                 echo "👋 感谢使用 $SCRIPT_NAME！"
@@ -1337,7 +1401,7 @@ main_menu() {
                 ;;
             *) 
                 echo ""
-                echo "❌ 无效选项！请输入 0-8 之间的数字"
+                echo "❌ 无效选项！请输入 0-9 之间的数字"
                 echo "ℹ️  提示：输入数字后按回车键确认"
                 sleep 2
                 ;;
