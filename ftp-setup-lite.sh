@@ -469,6 +469,143 @@ manage_logs() {
     read -p "按回车键返回主菜单..." -r
 }
 
+# 诊断vsftpd启动问题
+diagnose_vsftpd() {
+    echo ""
+    echo "======================================================"
+    echo "🔍 vsftpd 启动问题诊断"
+    echo "======================================================"
+    echo ""
+    
+    # 检查vsftpd是否安装
+    echo "📋 检查vsftpd安装状态..."
+    if command -v vsftpd >/dev/null 2>&1; then
+        echo "✅ vsftpd 已安装"
+        echo "   版本: $(vsftpd -v 2>&1 | head -1 || echo '无法获取版本')"
+    else
+        echo "❌ vsftpd 未安装"
+        echo ""
+        read -p "按回车键返回主菜单..." -r
+        return 1
+    fi
+    
+    # 检查配置文件
+    echo ""
+    echo "📋 检查配置文件..."
+    if [[ -f /etc/vsftpd.conf ]]; then
+        echo "✅ 配置文件存在: /etc/vsftpd.conf"
+        echo "   文件大小: $(ls -lh /etc/vsftpd.conf | awk '{print $5}')"
+        echo "   修改时间: $(ls -l /etc/vsftpd.conf | awk '{print $6, $7, $8}')"
+    else
+        echo "❌ 配置文件不存在: /etc/vsftpd.conf"
+    fi
+    
+    # 检查服务状态
+    echo ""
+    echo "📋 检查服务状态..."
+    echo "当前状态: $(systemctl is-active vsftpd 2>/dev/null || echo '未知')"
+    echo "启用状态: $(systemctl is-enabled vsftpd 2>/dev/null || echo '未知')"
+    
+    # 尝试启动并获取错误信息
+    echo ""
+    echo "📋 尝试启动服务并获取错误信息..."
+    echo "执行: systemctl start vsftpd"
+    
+    if systemctl start vsftpd 2>/dev/null; then
+        echo "✅ 启动成功！"
+        echo "当前状态: $(systemctl is-active vsftpd)"
+    else
+        echo "❌ 启动失败"
+        echo ""
+        echo "🔍 详细错误信息："
+        echo "----------------------------------------"
+        systemctl status vsftpd --no-pager -l 2>/dev/null || echo "无法获取状态信息"
+        echo "----------------------------------------"
+        echo ""
+        echo "🔍 系统日志 (最近10条)："
+        echo "----------------------------------------"
+        journalctl -u vsftpd --no-pager -n 10 2>/dev/null || echo "无法获取日志信息"
+        echo "----------------------------------------"
+    fi
+    
+    # 检查端口占用
+    echo ""
+    echo "📋 检查端口占用..."
+    if command -v ss >/dev/null 2>&1; then
+        local port21=$(ss -tuln | grep ":21 " | wc -l)
+        if [[ $port21 -gt 0 ]]; then
+            echo "⚠️ 端口21已被占用："
+            ss -tuln | grep ":21 " || echo "无法获取详细信息"
+        else
+            echo "✅ 端口21未被占用"
+        fi
+    elif command -v netstat >/dev/null 2>&1; then
+        local port21=$(netstat -tuln | grep ":21 " | wc -l)
+        if [[ $port21 -gt 0 ]]; then
+            echo "⚠️ 端口21已被占用："
+            netstat -tuln | grep ":21 " || echo "无法获取详细信息"
+        else
+            echo "✅ 端口21未被占用"
+        fi
+    else
+        echo "⚠️ 无法检查端口占用（缺少ss或netstat命令）"
+    fi
+    
+    # 检查关键目录
+    echo ""
+    echo "📋 检查关键目录..."
+    
+    # 检查secure_chroot_dir
+    if [[ -d /var/run/vsftpd ]]; then
+        echo "✅ vsftpd运行目录存在: /var/run/vsftpd"
+    else
+        echo "❌ vsftpd运行目录不存在: /var/run/vsftpd"
+        echo "   尝试创建..."
+        if mkdir -p /var/run/vsftpd/empty 2>/dev/null; then
+            echo "   ✅ 创建成功"
+        else
+            echo "   ❌ 创建失败"
+        fi
+    fi
+    
+    # 检查empty目录
+    if [[ -d /var/run/vsftpd/empty ]]; then
+        echo "✅ chroot目录存在: /var/run/vsftpd/empty"
+    else
+        echo "❌ chroot目录不存在: /var/run/vsftpd/empty"
+        echo "   尝试创建..."
+        if mkdir -p /var/run/vsftpd/empty 2>/dev/null; then
+            echo "   ✅ 创建成功"
+        else
+            echo "   ❌ 创建失败"
+        fi
+    fi
+    
+    # 检查用户和组
+    echo ""
+    echo "📋 检查FTP用户配置..."
+    if getent group ftp-users >/dev/null 2>&1; then
+        local ftp_users=$(getent group ftp-users | cut -d: -f4)
+        if [[ -n "$ftp_users" ]]; then
+            echo "✅ ftp-users组存在，用户: $ftp_users"
+        else
+            echo "⚠️ ftp-users组存在但无用户"
+        fi
+    else
+        echo "❌ ftp-users组不存在"
+    fi
+    
+    echo ""
+    echo "💡 建议操作："
+    echo "1. 如果是目录问题，已自动尝试创建"
+    echo "2. 如果是端口占用，请停止占用端口的服务"
+    echo "3. 如果是配置问题，请重新安装"
+    echo "4. 查看上方的详细错误信息进行针对性修复"
+    
+    echo ""
+    read -p "按回车键返回主菜单..." -r
+}
+
 # 生成随机密码
 generate_password() {
     local length=${1:-12}
@@ -1790,8 +1927,9 @@ main_menu() {
     echo "🛠️ 系统功能："
     echo "10) 📝 查看日志"
     echo "11) 🧹 清理日志"
-    echo "12) 🔄 在线更新"
-    echo "13) 🗑️ 卸载服务"
+    echo "12) 🔍 诊断启动问题"
+    echo "13) 🔄 在线更新"
+    echo "14) 🗑️ 卸载服务"
     echo ""
     echo "0) 🚪 退出"
         echo ""
@@ -1802,7 +1940,7 @@ main_menu() {
     echo "   • 录播姬输出目录: /opt/brec/file"
     echo "   • 所有选项都有默认值，直接回车即可"
         echo ""
-        read -p "请输入选项 (0-13): " choice
+        read -p "请输入选项 (0-14): " choice
         
         case $choice in
             1) install_ftp_lite ;;
@@ -1856,8 +1994,9 @@ main_menu() {
                 echo ""
                 read -p "按回车键返回主菜单..." -r
                 ;;
-            12) update_script ;;
-            13) uninstall_service ;;
+            12) diagnose_vsftpd ;;
+            13) update_script ;;
+            14) uninstall_service ;;
             0) 
                 echo ""
                 echo "👋 感谢使用 $SCRIPT_NAME！"
@@ -1865,7 +2004,7 @@ main_menu() {
                 ;;
             *) 
                 echo ""
-                echo "❌ 无效选项！请输入 0-13 之间的数字"
+                echo "❌ 无效选项！请输入 0-14 之间的数字"
                 echo "ℹ️  提示：输入数字后按回车键确认"
                 sleep 2
                 ;;
