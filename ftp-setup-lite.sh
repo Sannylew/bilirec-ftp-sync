@@ -982,19 +982,46 @@ update_script() {
     echo "🔄 $SCRIPT_NAME 在线更新"
     echo "======================================================"
     echo ""
-    echo "⚠️ 在线更新功能暂时不可用"
+    echo "⚠️ 注意事项："
+    echo "   • 当前版本: $SCRIPT_VERSION (已移除备份功能)"
+    echo "   • GitHub版本可能与本地版本不同"
+    echo "   • 更新可能会恢复到旧版本(有备份功能)"
+    echo "   • 建议仅在确实需要时进行更新"
     echo ""
-    echo "📋 当前情况："
-    echo "   • 您使用的是最新的 v1.1.0-lite 版本"
-    echo "   • 已移除备份功能，更简洁高效"
-    echo "   • GitHub仓库版本尚未同步"
+    echo "请选择更新方式："
+    echo "1) 🔍 检查更新 (智能更新)"
+    echo "2) ⚡ 强制更新 (直接覆盖)"
+    echo "3) 🔧 修复GitHub版本语法错误后更新"
+    echo "0) ⬅️ 返回主菜单"
     echo ""
-    echo "💡 建议："
-    echo "   • 当前版本功能完整，可正常使用"
-    echo "   • 如需更新，请等待GitHub版本同步"
-    echo ""
-    read -p "按回车键返回主菜单..." -r
-    return 0
+    read -p "请输入选项 (0-3): " update_choice
+    
+    case $update_choice in
+        1)
+            perform_smart_update
+            echo ""
+            read -p "按回车键返回主菜单..." -r
+            ;;
+        2)
+            perform_force_update
+            echo ""
+            read -p "按回车键返回主菜单..." -r
+            ;;
+        3)
+            perform_fix_and_update
+            echo ""
+            read -p "按回车键返回主菜单..." -r
+            ;;
+        0)
+            return 0
+            ;;
+        *)
+            echo ""
+            echo "❌ 无效选项！请输入 0-3 之间的数字"
+            sleep 2
+            update_script
+            ;;
+    esac
 }
 
 # 智能更新功能
@@ -1163,6 +1190,63 @@ perform_force_update() {
     execute_update "$TEMP_SCRIPT"
 }
 
+# 修复GitHub版本并更新
+perform_fix_and_update() {
+    echo ""
+    echo "🔧 修复GitHub版本语法错误后更新"
+    echo "======================================================"
+    
+    local SCRIPT_URL="https://raw.githubusercontent.com/Sannylew/bilirec-ftp-sync/main/ftp-setup-lite.sh"
+    local CURRENT_SCRIPT="$(readlink -f "$0")"
+    local TEMP_SCRIPT="/tmp/ftp_setup_lite_new.sh"
+    
+    # 检查网络连接
+    if ! check_network_connection; then
+        return 1
+    fi
+    
+    echo "📥 下载GitHub版本..."
+    if curl -s --max-time 30 "$SCRIPT_URL" -o "$TEMP_SCRIPT" 2>/dev/null; then
+        if [[ -f "$TEMP_SCRIPT" && -s "$TEMP_SCRIPT" ]]; then
+            echo "✅ 下载成功"
+        else
+            echo "❌ 下载失败"
+            return 1
+        fi
+    else
+        echo "❌ 下载失败"
+        return 1
+    fi
+    
+    echo "🔧 修复已知语法错误..."
+    # 修复 {bei 错误
+    if grep -q "{bei" "$TEMP_SCRIPT"; then
+        sed -i 's/{bei/{/g' "$TEMP_SCRIPT"
+        echo "   ✅ 修复了 {bei 语法错误"
+    fi
+    
+    # 验证修复后的语法
+    echo "🔍 验证修复后的脚本语法..."
+    if ! bash -n "$TEMP_SCRIPT" 2>/dev/null; then
+        echo "❌ 修复后仍有语法错误，无法更新"
+        rm -f "$TEMP_SCRIPT"
+        return 1
+    fi
+    echo "✅ 语法验证通过"
+    
+    echo ""
+    echo "⚠️ 注意：更新后可能会恢复到GitHub版本(可能包含备份功能)"
+    read -p "确认执行修复更新？(y/N): " confirm_fix
+    if [[ ! "$confirm_fix" =~ ^[Yy]$ ]]; then
+        echo "✅ 取消更新"
+        rm -f "$TEMP_SCRIPT"
+        return 0
+    fi
+    
+    # 执行更新
+    execute_update "$TEMP_SCRIPT"
+}
+
 # 执行更新操作
 execute_update() {
     local temp_script="$1"
@@ -1175,7 +1259,15 @@ execute_update() {
     # 验证新脚本语法
     echo "🔍 验证新脚本..."
     if ! bash -n "$temp_script" 2>/dev/null; then
-        echo "❌ 新脚本语法错误"
+        echo "❌ 新脚本语法错误，可能的原因："
+        echo "   • GitHub版本存在语法错误"
+        echo "   • 版本不兼容"
+        echo "   • 下载过程中文件损坏"
+        echo ""
+        echo "🔧 建议："
+        echo "   • 检查网络连接"
+        echo "   • 稍后重试"
+        echo "   • 或继续使用当前版本"
         rm -f "$temp_script"
         return 1
     fi
@@ -1225,13 +1317,14 @@ uninstall_service() {
     echo ""
     
     echo "⚠️ 这将删除："
-    echo "   • 所有FTP用户和目录"
+    echo "   • 所有FTP用户和用户组"
     echo "   • vsftpd服务配置"
-    echo "   • 目录映射"
+    echo "   • FTP相关配置文件"
     echo ""
     echo "💡 保留的内容："
     echo "   • 源目录数据（录播文件安全）"
     echo "   • vsftpd软件包"
+    echo "   • 脚本文件（可选择删除）"
     echo ""
     
     read -p "确认卸载？(y/N): " confirm
@@ -1264,6 +1357,10 @@ uninstall_service() {
         fi
     fi
     
+    # 删除FTP用户组
+    log_info "删除用户组..."
+    groupdel ftp-users 2>/dev/null || true
+    
     # 移除配置文件
     log_info "移除配置文件..."
     rm -f /etc/vsftpd.conf
@@ -1271,11 +1368,56 @@ uninstall_service() {
     echo ""
     echo "✅ 卸载完成！"
     echo ""
-    echo "💡 提示："
-    echo "   • 源目录数据已保留"
-    echo "   • 如需重新安装，请重新运行此脚本"
-    echo ""
     
+    # 询问是否删除脚本本身
+    echo "🤔 是否要删除脚本文件本身？"
+    echo ""
+    echo "选择操作："
+    echo "1) 保留脚本文件 (可重新安装)"
+    echo "2) 删除脚本文件 (完全清理)"
+    echo ""
+    read -p "请选择 (1/2，默认1): " delete_choice
+    delete_choice=${delete_choice:-1}
+    
+    case $delete_choice in
+        2)
+            echo ""
+            echo "⚠️ 确认删除脚本文件？此操作不可恢复"
+            read -p "输入 'DELETE' 确认删除脚本: " confirm_delete
+            if [[ "$confirm_delete" == "DELETE" ]]; then
+                local script_path="$(readlink -f "$0")"
+                echo ""
+                echo "🗑️ 删除脚本文件: $script_path"
+                
+                # 创建一个临时脚本来删除主脚本
+                cat > /tmp/cleanup_ftp_script.sh << 'EOF'
+#!/bin/bash
+sleep 1
+rm -f "$1"
+echo "✅ 脚本文件已删除"
+echo "🎉 $SCRIPT_NAME 已完全卸载"
+EOF
+                chmod +x /tmp/cleanup_ftp_script.sh
+                
+                echo "🎉 $SCRIPT_NAME 完全卸载完成！"
+                echo "💡 感谢使用！"
+                
+                # 执行清理脚本并退出
+                exec /tmp/cleanup_ftp_script.sh "$script_path"
+            else
+                echo "❌ 删除已取消，脚本文件保留"
+            fi
+            ;;
+        1|*)
+            echo ""
+            echo "💡 提示："
+            echo "   • 源目录数据已保留"
+            echo "   • 脚本文件已保留: $0"
+            echo "   • 如需重新安装，请重新运行此脚本"
+            ;;
+    esac
+    
+    echo ""
     read -p "按回车键退出..." -r
     exit 0
 }
