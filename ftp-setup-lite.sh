@@ -1,9 +1,9 @@
 #!/bin/bash
 
 # BRCE FTP 轻量版部署脚本
-# 版本: v1.0.0-lite
-# 功能: 只读bind mount映射 + FTP服务
-# 适合: 只需要文件分享，无需实时同步的用户
+# 版本: v1.1.0-lite
+# 功能: 直接目录访问 + FTP服务
+# 适合: 简单的录播文件分享，无复杂权限配置
 
 set -o pipefail
 
