@@ -3037,130 +3037,421 @@ show_update_history() {
     echo "   • 最新版本: https://github.com/Sannylew/bilirec-ftp-sync/blob/main/ftp-setup.sh"
 }
 
-# 卸载FTP服务 - 修复变量未初始化问题
+# 完善的卸载FTP服务功能
 uninstall_brce_ftp() {
+    echo ""
+    echo "======================================================"
+    echo "🗑️ BRCE FTP 服务卸载工具"
+    echo "======================================================"
+    
+    # 扫描系统组件
+    echo "🔍 正在扫描系统组件..."
+    
     # 获取当前配置信息
     get_current_config
     
-    echo ""
-    echo "======================================================"
-    echo "🗑️ 卸载BRCE FTP服务"
-    echo "======================================================"
+    # 查找所有FTP用户
+    local all_ftp_users=()
+    local ftp_count=0
+    for user_home in /home/*/ftp; do
+        if [[ -d "$user_home" ]]; then
+            local username=$(basename $(dirname "$user_home"))
+            all_ftp_users+=("$username")
+            ((ftp_count++))
+        fi
+    done
     
-    echo "📋 当前配置信息："
-    echo "   - FTP用户: $FTP_USER"
-    echo "   - 源目录: $SOURCE_DIR"
-    if [[ "$FTP_USER" != "unknown" ]]; then
-        echo "   - FTP目录: /home/$FTP_USER/ftp"
-        echo "   - 同步脚本: /usr/local/bin/ftp_sync_${FTP_USER}.sh"
+    # 查找其他组件
+    local sync_scripts=($(ls /usr/local/bin/ftp_sync_*.sh 2>/dev/null || true))
+    local config_backups=($(ls /etc/vsftpd.conf.backup.* 2>/dev/null || true))
+    local total_size=0
+    
+    # 计算占用空间
+    for user in "${all_ftp_users[@]}"; do
+        if [[ -d "/home/$user" ]]; then
+            local user_size=$(du -sm "/home/$user" 2>/dev/null | cut -f1 || echo "0")
+            total_size=$((total_size + user_size))
+        fi
+    done
+    
+    # 显示扫描结果
+    echo ""
+    echo "📋 发现的组件："
+    echo "   👥 FTP用户: $ftp_count 个"
+    if [[ $ftp_count -gt 0 ]]; then
+        for user in "${all_ftp_users[@]}"; do
+            echo "      - $user"
+        done
     fi
-    echo "   - 系统服务: brce-ftp-sync.service"
-    echo ""
+    echo "   🔧 同步脚本: ${#sync_scripts[@]} 个"
+    echo "   📄 配置备份: ${#config_backups[@]} 个"
+    echo "   🗂️ 服务文件: $(ls /etc/systemd/system/brce-ftp-sync.service 2>/dev/null | wc -l) 个"
+    echo "   📝 日志文件: $(ls /var/log/brce_sync.log 2>/dev/null | wc -l) 个"
+    echo "   💾 占用空间: 约 ${total_size}MB"
     
-    read -p "⚠️ 确定要卸载BRCE FTP服务吗？(y/N): " confirm
+    echo ""
+    echo "🔧 卸载模式选择："
+    echo "1) 🚀 标准卸载 - 删除服务和用户，保留配置备份"
+    echo "2) 🔥 完全清理 - 删除所有相关文件和日志"
+    echo "3) 🗑️ 深度清理 - 完全清理 + 卸载vsftpd软件包"
+    echo ""
+    read -p "请选择卸载模式 (1-3，默认1): " uninstall_mode
+    uninstall_mode=${uninstall_mode:-1}
+    
+    echo ""
+    case $uninstall_mode in
+        1)
+            echo "🚀 将执行标准卸载："
+            echo "   ✓ 停止并删除服务"
+            echo "   ✓ 删除所有FTP用户"
+            echo "   ✓ 恢复vsftpd配置"
+            echo "   ✗ 保留配置备份和日志"
+            ;;
+        2)
+            echo "🔥 将执行完全清理："
+            echo "   ✓ 停止并删除服务"
+            echo "   ✓ 删除所有FTP用户"
+            echo "   ✓ 删除所有配置备份"
+            echo "   ✓ 清理所有日志文件"
+            echo "   ✗ 保留vsftpd软件包"
+            ;;
+        3)
+            echo "🗑️ 将执行深度清理："
+            echo "   ✓ 完全清理所有组件"
+            echo "   ✓ 卸载vsftpd软件包"
+            echo "   ✓ 清理防火墙规则"
+            echo "   ✓ 清理系统依赖"
+            ;;
+    esac
+    
+    echo ""
+    read -p "⚠️  确认执行卸载？(y/N): " confirm
     if [[ ! "$confirm" =~ ^[Yy]$ ]]; then
-        log_info "用户取消卸载"
-        echo ""
         echo "✅ 取消卸载操作"
-        echo ""
         read -p "按回车键返回主菜单..." -r
         return 1
     fi
     
-    echo ""
-    echo "🔧 卸载选项："
-    echo "1) 完全卸载（包含vsftpd软件包）"
-    echo "2) 仅卸载BRCE配置（保留vsftpd）"
-    echo ""
-    read -p "请选择卸载方式 (1/2，默认 2): " uninstall_type
-    uninstall_type=${uninstall_type:-2}
+    # 执行卸载
+    execute_uninstall_process "$uninstall_mode" "${all_ftp_users[@]}"
+}
+
+# 执行卸载过程
+execute_uninstall_process() {
+    local mode="$1"
+    shift
+    local ftp_users=("$@")
+    local deleted_count=0
+    local freed_space=0
     
     echo ""
-    echo "🛑 停止FTP服务..."
+    echo "🔄 开始卸载过程..."
+    echo ""
+    
+    # 阶段1: 停止所有服务
+    echo "📍 阶段1: 停止服务"
+    echo "   🛑 停止brce-ftp-sync服务..."
+    systemctl stop brce-ftp-sync 2>/dev/null || true
+    systemctl disable brce-ftp-sync 2>/dev/null || true
+    
+    echo "   🛑 停止vsftpd服务..."
     systemctl stop vsftpd 2>/dev/null || true
     systemctl disable vsftpd 2>/dev/null || true
     
-    echo "⏹️ 停止实时同步服务..."
-    stop_sync_service
+    # 终止相关进程
+    echo "   🔫 终止相关进程..."
+    pkill -f "inotifywait.*brec\|inotifywait.*ftp" 2>/dev/null || true
+    pkill -f "rsync.*brce\|rsync.*ftp" 2>/dev/null || true
+    pkill -f "ftp_sync_.*\.sh" 2>/dev/null || true
+    sleep 2
+    echo "   ✅ 服务停止完成"
+    echo ""
     
-    echo "🗑️ 删除同步服务文件..."
-    rm -f "/etc/systemd/system/brce-ftp-sync.service"
-    rm -f "/usr/local/bin/ftp_sync_${FTP_USER}.sh"
-    systemctl daemon-reload
-    
-    echo "🗑️ 删除FTP用户..."
-    userdel -r "$FTP_USER" 2>/dev/null || true
-    
-    echo "🗑️ 恢复配置文件..."
-    # 恢复vsftpd配置（如果有备份?    latest_backup=$(ls /etc/vsftpd.conf.backup.* 2>/dev/null | tail -1)
-    if [ -f "$latest_backup" ]; then
-        echo "📋 恢复vsftpd配置: $latest_backup"
-        cp "$latest_backup" /etc/vsftpd.conf
-    else
-        echo "⚠️  未找到vsftpd配置备份"
-    fi
-    
-    # 清理fstab中的bind mount条目（如果有）
-    if grep -q "/home/$FTP_USER/ftp" /etc/fstab 2>/dev/null; then
-        echo "🗑️ 清理fstab条目..."
-        sed -i "\|/home/$FTP_USER/ftp|d" /etc/fstab 2>/dev/null || true
-    fi
-    
-    # 完全卸载选项
-    if [[ "$uninstall_type" == "1" ]]; then
-        echo ""
-        echo "🗑️ 卸载vsftpd软件包..."
-        read -p "⚠️ 确定要卸载vsftpd软件包吗？(y/N): " remove_pkg
-        if [[ "$remove_pkg" =~ ^[Yy]$ ]]; then
-            if command -v apt-get &> /dev/null; then
-                apt-get remove --purge -y vsftpd 2>/dev/null || true
-                echo "✅ vsftpd已卸载"
-            elif command -v yum &> /dev/null; then
-                yum remove -y vsftpd 2>/dev/null || true
-                echo "✅ vsftpd已卸载"
+    # 阶段2: 删除用户和主目录
+    if [[ ${#ftp_users[@]} -gt 0 ]]; then
+        echo "📍 阶段2: 删除FTP用户"
+        for user in "${ftp_users[@]}"; do
+            echo "   🗑️ 删除用户: $user"
+            
+            # 计算用户目录大小
+            if [[ -d "/home/$user" ]]; then
+                local user_size=$(du -sm "/home/$user" 2>/dev/null | cut -f1 || echo "0")
+                freed_space=$((freed_space + user_size))
             fi
-        else
-            echo "💡 保留vsftpd软件包"
+            
+            # 停止用户进程
+            pkill -u "$user" 2>/dev/null || true
+            
+            # 删除用户和主目录
+            userdel -r "$user" 2>/dev/null || true
+            rm -rf "/home/$user" 2>/dev/null || true
+            
+            ((deleted_count++))
+        done
+        echo "   ✅ 删除了 $deleted_count 个FTP用户"
+    else
+        echo "📍 阶段2: 无FTP用户需要删除"
+    fi
+    echo ""
+    
+    # 阶段3: 清理服务文件
+    echo "📍 阶段3: 清理服务文件"
+    echo "   🗑️ 删除systemd服务文件..."
+    rm -f "/etc/systemd/system/brce-ftp-sync.service"
+    
+    echo "   🗑️ 删除同步脚本..."
+    rm -f /usr/local/bin/ftp_sync_*.sh
+    
+    echo "   🔄 重新加载systemd..."
+    systemctl daemon-reload 2>/dev/null || true
+    echo "   ✅ 服务文件清理完成"
+    echo ""
+    
+    # 阶段4: 配置文件处理
+    echo "📍 阶段4: 配置文件处理"
+    
+    # 恢复vsftpd原始配置
+    local latest_backup=$(ls /etc/vsftpd.conf.backup.* 2>/dev/null | tail -1)
+    if [[ -f "$latest_backup" ]]; then
+        echo "   📋 恢复vsftpd原始配置..."
+        cp "$latest_backup" /etc/vsftpd.conf 2>/dev/null || true
+        echo "   ✅ 配置已恢复: $latest_backup"
+    else
+        echo "   ⚠️  未找到vsftpd配置备份"
+    fi
+    
+    # 删除备份文件（完全清理模式）
+    if [[ "$mode" -ge 2 ]]; then
+        echo "   🗑️ 删除所有配置备份..."
+        rm -f /etc/vsftpd.conf.backup.* 2>/dev/null || true
+    fi
+    
+    # 清理fstab条目
+    echo "   🗑️ 清理fstab挂载条目..."
+    sed -i '/ftp.*bind/d' /etc/fstab 2>/dev/null || true
+    echo "   ✅ 配置处理完成"
+    echo ""
+    
+    # 阶段5: 日志和临时文件清理
+    if [[ "$mode" -ge 2 ]]; then
+        echo "📍 阶段5: 清理日志和临时文件"
+        
+        # 计算日志文件大小
+        if [[ -f "/var/log/brce_sync.log" ]]; then
+            local log_size=$(du -sm "/var/log/brce_sync.log" 2>/dev/null | cut -f1 || echo "0")
+            freed_space=$((freed_space + log_size))
         fi
+        
+        echo "   🗑️ 删除日志文件..."
+        rm -f "/var/log/brce_sync.log" 2>/dev/null || true
+        rm -f "/var/log/brce_sync.log.old" 2>/dev/null || true
+        rm -f "/var/log/brce_sync.log.*.gz" 2>/dev/null || true
+        
+        echo "   🗑️ 清理临时文件..."
+        rm -f /tmp/brce_sync.lock* 2>/dev/null || true
+        rm -f /tmp/cleanup_brce_script.sh 2>/dev/null || true
+        rm -f /tmp/ftp_*.tmp 2>/dev/null || true
+        rm -f /var/run/brce-ftp-sync.pid 2>/dev/null || true
+        
+        echo "   ✅ 日志和临时文件清理完成"
+        echo ""
+    fi
+    
+    # 阶段6: 软件包和防火墙清理（深度清理模式）
+    if [[ "$mode" -eq 3 ]]; then
+        echo "📍 阶段6: 深度清理"
+        
+        # 清理防火墙规则
+        echo "   🔥 清理防火墙规则..."
+        if command -v ufw &> /dev/null; then
+            ufw delete allow 21/tcp 2>/dev/null || true
+            ufw delete allow 40000:40100/tcp 2>/dev/null || true
+        fi
+        if command -v iptables &> /dev/null; then
+            iptables -D INPUT -p tcp --dport 21 -j ACCEPT 2>/dev/null || true
+            iptables -D INPUT -p tcp --dport 40000:40100 -j ACCEPT 2>/dev/null || true
+        fi
+        
+        # 卸载vsftpd
+        echo "   📦 卸载vsftpd软件包..."
+        if command -v apt-get &> /dev/null; then
+            apt-get remove --purge -y vsftpd 2>/dev/null || true
+            apt-get autoremove -y 2>/dev/null || true
+        elif command -v yum &> /dev/null; then
+            yum remove -y vsftpd 2>/dev/null || true
+        elif command -v dnf &> /dev/null; then
+            dnf remove -y vsftpd 2>/dev/null || true
+        fi
+        
+        # 询问是否清理依赖包
+        echo ""
+        read -p "   ⚠️  是否也卸载依赖包 rsync 和 inotify-tools？(y/N): " remove_deps
+        if [[ "$remove_deps" =~ ^[Yy]$ ]]; then
+            echo "   📦 卸载依赖包..."
+            if command -v apt-get &> /dev/null; then
+                apt-get remove -y rsync inotify-tools 2>/dev/null || true
+            elif command -v yum &> /dev/null; then
+                yum remove -y rsync inotify-tools 2>/dev/null || true
+            elif command -v dnf &> /dev/null; then
+                dnf remove -y rsync inotify-tools 2>/dev/null || true
+            fi
+        fi
+        
+        echo "   ✅ 深度清理完成"
+        echo ""
+    fi
+    
+    # 阶段7: 系统清理
+    echo "📍 最终阶段: 系统清理"
+    echo "   🧹 清理系统缓存..."
+    
+    # 清理包管理器缓存
+    if command -v apt-get &> /dev/null; then
+        apt-get autoremove -y 2>/dev/null || true
+        apt-get autoclean 2>/dev/null || true
+    elif command -v yum &> /dev/null; then
+        yum clean all 2>/dev/null || true
+    elif command -v dnf &> /dev/null; then
+        dnf clean all 2>/dev/null || true
+    fi
+    
+    # 清理用户组
+    if getent group "brce-ftp" >/dev/null 2>&1; then
+        groupdel "brce-ftp" 2>/dev/null || true
+        echo "   ✓ 删除用户组: brce-ftp"
+    fi
+    
+    systemctl daemon-reload 2>/dev/null || true
+    sync
+    echo "   ✅ 系统清理完成"
+    echo ""
+    
+    # 生成卸载报告
+    generate_uninstall_report "$mode" "$deleted_count" "$freed_space"
+    
+    # 脚本管理
+    handle_script_removal "$mode"
+}
+
+# 生成卸载报告
+generate_uninstall_report() {
+    local mode="$1"
+    local deleted_count="$2"
+    local freed_space="$3"
+    
+    echo "======================================================"
+    echo "✅ 卸载完成报告"
+    echo "======================================================"
+    echo ""
+    echo "📊 卸载统计："
+    
+    case $mode in
+        1) echo "   🔧 卸载模式: 标准卸载" ;;
+        2) echo "   🔧 卸载模式: 完全清理" ;;
+        3) echo "   🔧 卸载模式: 深度清理" ;;
+    esac
+    
+    echo "   👥 删除用户: $deleted_count 个"
+    echo "   💾 释放空间: 约 ${freed_space}MB"
+    echo "   🔧 清理服务: brce-ftp-sync"
+    echo "   📄 处理配置: vsftpd.conf"
+    
+    if [[ "$mode" -ge 2 ]]; then
+        echo "   📝 清理日志: 完成"
+        echo "   🗑️ 清理临时文件: 完成"
+    fi
+    
+    if [[ "$mode" -eq 3 ]]; then
+        echo "   📦 软件包卸载: vsftpd"
+        echo "   🔥 防火墙清理: 完成"
     fi
     
     echo ""
-    echo "🔄 脚本管理选项："
+    echo "✅ 已清理的组件："
+    echo "   ✓ 所有FTP用户和主目录"
+    echo "   ✓ 实时同步服务和脚本"
+    echo "   ✓ systemd服务文件"
+    echo "   ✓ vsftpd配置已恢复"
+    
+    if [[ "$mode" -ge 2 ]]; then
+        echo "   ✓ 日志文件和临时文件"
+        echo "   ✓ 配置备份文件"
+    fi
+    
+    if [[ "$mode" -eq 3 ]]; then
+        echo "   ✓ vsftpd软件包"
+        echo "   ✓ 防火墙规则"
+    fi
+    
+    echo ""
+    echo "💡 保留的内容："
+    echo "   📁 源目录数据 (数据安全保护)"
+    
+    if [[ "$mode" -eq 1 ]]; then
+        echo "   📄 配置备份文件"
+        echo "   📝 日志文件"
+    fi
+    
+    if [[ "$mode" -le 2 ]]; then
+        echo "   📦 vsftpd软件包"
+    fi
+    
+    echo ""
+    echo "🎉 BRCE FTP服务卸载成功！"
+}
+
+# 脚本删除处理
+handle_script_removal() {
+    local mode="$1"
+    
+    echo ""
+    echo "🔄 脚本文件管理："
     echo "📋 当前脚本: $(readlink -f "$0")"
     echo ""
-    read -p "🗑️ 是否删除本脚本文件？(y/N): " remove_script
+    
+    if [[ "$mode" -eq 3 ]]; then
+        echo "🔥 深度清理模式建议删除脚本文件"
+        read -p "是否删除脚本文件？(Y/n): " remove_script
+        remove_script=${remove_script:-Y}
+    else
+        read -p "是否删除脚本文件？(y/N): " remove_script
+        remove_script=${remove_script:-N}
+    fi
     
     if [[ "$remove_script" =~ ^[Yy]$ ]]; then
         script_path=$(readlink -f "$0")
-        echo "🗑️ 准备删除脚本: $script_path"
-        echo "💡 3秒后删除脚本文件..."
+        echo ""
+        echo "🗑️ 准备删除脚本文件..."
+        echo "💡 3秒后执行删除..."
         sleep 1 && echo "💡 2..." && sleep 1 && echo "💡 1..." && sleep 1
         
-        # 创建自删除脚?        cat > /tmp/cleanup_brce_script.sh << EOF
+        # 创建自删除脚本
+        cat > /tmp/final_cleanup.sh << EOF
 #!/bin/bash
-echo "🗑️ 删除BRCE FTP脚本..."
+echo "🗑️ 执行脚本自删除..."
 rm -f "$script_path"
-if [ ! -f "$script_path" ]; then
-    echo "✅ 脚本已删除: $script_path"
+if [[ ! -f "$script_path" ]]; then
+    echo "✅ 脚本已完全删除: $script_path"
+    echo ""
+    echo "🎉 BRCE FTP完全卸载成功！"
+    echo "💯 系统已恢复到安装前状态"
+    echo ""
+    echo "感谢使用 BRCE FTP 同步工具！"
 else
     echo "⚠️  脚本删除失败: $script_path"
 fi
-rm -f /tmp/cleanup_brce_script.sh
+rm -f /tmp/final_cleanup.sh
 EOF
-        chmod +x /tmp/cleanup_brce_script.sh
+        chmod +x /tmp/final_cleanup.sh
         
-        echo "✅ 卸载完成"
-        echo "💡 注意: BRCE目录 $SOURCE_DIR 保持不变"
-        echo "🚀 正在删除脚本文件..."
-        
-        # 执行自删除并退?        exec /tmp/cleanup_brce_script.sh
+        echo "🚀 正在执行自删除..."
+        exec /tmp/final_cleanup.sh
     else
-        echo "💡 保留脚本文件: $(readlink -f "$0")"
-        echo "✅ 卸载完成"
-        echo "💡 注意: BRCE目录 $SOURCE_DIR 保持不变"
         echo ""
-        echo "🔄 脚本已保留，可以随时重新配置FTP服务"
-        echo "📝 使用方法: sudo $(basename "$0")"
+        echo "💡 脚本文件已保留: $(readlink -f "$0")"
+        echo "🔄 如需重新安装，请运行: sudo $(basename "$0")"
+        echo ""
+        read -p "按回车键返回主菜单..." -r
     fi
 }
 
