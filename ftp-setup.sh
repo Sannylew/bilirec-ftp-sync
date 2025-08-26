@@ -1350,6 +1350,11 @@ change_ftp_password() {
     
     if [[ $attempt -gt $max_attempts ]]; then
         log_error "密码设置失败，已达到最大尝试次数"
+        echo ""
+        echo "❌ 密码设置失败"
+        echo "💡 已达到最大尝试次数，请稍后重试"
+        echo ""
+        read -p "按回车键返回用户管理菜单..." -r
         return 1
     fi
     
@@ -1377,9 +1382,16 @@ change_ftp_password() {
     echo "   • 旧密码已失效，请使用新密码登录"
     echo "   • 建议将新密码保存在密码管理器中"
     echo "======================================================"
+        echo ""
+        read -p "按回车键返回用户管理菜单..." -r
         return 0
     else
         log_error "密码更改失败"
+        echo ""
+        echo "❌ 密码更改失败"
+        echo "💡 请检查系统权限或稍后重试"
+        echo ""
+        read -p "按回车键返回用户管理菜单..." -r
         return 1
     fi
 }
@@ -1559,6 +1571,7 @@ add_ftp_user() {
     echo "======================================================"
     echo ""
     
+    read -p "按回车键返回用户管理菜单..." -r
     return 0
 }
 
@@ -1571,7 +1584,11 @@ delete_ftp_user() {
     
     # 先列出所有用户
     if ! list_ftp_users; then
-        echo "没有FTP用户可删除"
+        echo ""
+        echo "❌ 没有FTP用户可删除"
+        echo "💡 请先创建FTP用户"
+        echo ""
+        read -p "按回车键返回用户管理菜单..." -r
         return 1
     fi
     
@@ -1622,6 +1639,11 @@ delete_ftp_user() {
     
     if [[ "$confirm_username" != "$target_user" ]]; then
         log_info "用户名不匹配，取消删除操作"
+        echo ""
+        echo "❌ 用户名不匹配，取消删除操作"
+        echo "💡 请重新操作并正确输入用户名"
+        echo ""
+        read -p "按回车键返回用户管理菜单..." -r
         return 1
     fi
     
@@ -1629,6 +1651,11 @@ delete_ftp_user() {
     
     if [[ "$final_confirm" != "yes" ]]; then
         log_info "用户取消删除操作"
+        echo ""
+        echo "✅ 取消删除操作"
+        echo "💡 用户数据已保留"
+        echo ""
+        read -p "按回车键返回用户管理菜单..." -r
         return 1
     fi
     
@@ -1650,10 +1677,17 @@ delete_ftp_user() {
         
         echo ""
         echo "✅ 用户删除成功！"
+        echo "💡 用户数据已完全清除"
         echo ""
+        read -p "按回车键返回用户管理菜单..." -r
         return 0
     else
         log_error "用户删除失败"
+        echo ""
+        echo "❌ 用户删除失败"
+        echo "💡 请检查系统权限或稍后重试"
+        echo ""
+        read -p "按回车键返回用户管理菜单..." -r
         return 1
     fi
 }
@@ -2338,6 +2372,12 @@ check_ftp_status() {
     echo "   端口: 21"
     echo "   用户名: $FTP_USER"
     echo "   模式: 双向零延迟实时同步"
+    echo ""
+    echo "📝 提示："
+    echo "   • 可以截图保存状态信息"
+    echo "   • 如有问题请查看日志排错"
+    echo ""
+    read -p "按回车键返回主菜单..." -r
 }
 
 # 测试实时同步 - 修复变量未初始化问题
@@ -2478,10 +2518,17 @@ test_realtime_sync() {
         echo "✅ FTP→源: 文件删除同步成功"
         echo ""
         echo "🎉 双向实时同步功能完全正常！"
-        echo "🎉 双向实时同步功能完全正常！"
     else
         echo "❌ FTP→源: 文件删除同步失败"
     fi
+    
+    echo ""
+    echo "📝 测试完成！"
+    echo "💡 提示："
+    echo "   • 如果测试失败，请检查服务状态"
+    echo "   • 可以查看日志了解详细信息"
+    echo ""
+    read -p "按回车键返回主菜单..." -r
 }
 
 # 在线更新脚本
