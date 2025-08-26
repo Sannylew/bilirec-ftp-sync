@@ -364,7 +364,7 @@ install_ftp_lite() {
     read -p "🔐 自动生成密码？(Y/n): " auto_pwd
     auto_pwd=${auto_pwd:-Y}
     
-        if [[ "$auto_pwd" =~ ^[Yy]$ ]]; then
+    if [[ "$auto_pwd" =~ ^[Yy]$ ]]; then
         ftp_password=$(generate_password 12)
         log_info "已自动生成密码"
     else
@@ -405,35 +405,52 @@ install_ftp_lite() {
     echo "🚀 开始安装..."
     
     # 检查网络
+    echo "🌐 检查网络连接..."
     check_network
     
     # 安装vsftpd
+    echo "📦 步骤1/5: 安装vsftpd..."
     log_info "正在安装 vsftpd..."
     if ! install_vsftpd; then
         log_error "vsftpd 安装失败"
+        echo "❌ 安装步骤失败，请检查网络连接和权限"
+        read -p "按回车键返回主菜单..." -r
         return 1
     fi
+    echo "✅ vsftpd 安装完成"
     
     # 创建FTP用户
+    echo "👤 步骤2/5: 创建FTP用户..."
     log_info "正在配置FTP用户..."
     if ! create_ftp_user "$ftp_user" "$ftp_password" "$recording_dir"; then
         log_error "FTP用户配置失败"
+        echo "❌ 用户配置失败"
+        read -p "按回车键返回主菜单..." -r
         return 1
     fi
+    echo "✅ FTP用户创建完成"
     
     # 生成配置
+    echo "⚙️ 步骤3/5: 生成配置文件..."
     log_info "正在生成配置文件..."
     generate_vsftpd_config
+    echo "✅ 配置文件生成完成"
     
     # 配置防火墙
+    echo "🔥 步骤4/5: 配置防火墙..."
     configure_firewall
+    echo "✅ 防火墙配置完成"
     
     # 启动服务
+    echo "🚀 步骤5/5: 启动服务..."
     log_info "正在启动服务..."
     if ! start_services; then
         log_error "服务启动失败"
+        echo "❌ 服务启动失败"
+        read -p "按回车键返回主菜单..." -r
         return 1
     fi
+    echo "✅ 服务启动完成"
     
     # 获取服务器IP
     local server_ip=$(get_server_ip)
