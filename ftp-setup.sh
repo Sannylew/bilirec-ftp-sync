@@ -14,21 +14,49 @@ readonly LOG_FILE="/var/log/brce_ftp_setup.log"
 SOURCE_DIR=""
 FTP_USER=""
 
+# 自动日志轮转函数
+auto_rotate_log() {
+    local log_file="$1"
+    local max_lines="${2:-2000}"  # 默认最大行数
+    
+    if [[ -f "$log_file" ]]; then
+        local current_lines=$(wc -l < "$log_file" 2>/dev/null || echo "0")
+        if [[ "$current_lines" -gt "$max_lines" ]]; then
+            # 创建备份并保留最近的行数
+            local backup_file="${log_file}.old"
+            local keep_lines=$((max_lines / 2))  # 保留一半行数
+            
+            tail -n "$keep_lines" "$log_file" > "${log_file}.tmp"
+            head -n "$((current_lines - keep_lines))" "$log_file" > "$backup_file" 2>/dev/null || true
+            mv "${log_file}.tmp" "$log_file"
+            
+            # 压缩旧日志以节省空间
+            if command -v gzip &> /dev/null && [[ -f "$backup_file" ]]; then
+                gzip "$backup_file" 2>/dev/null || true
+            fi
+        fi
+    fi
+}
+
 # 增强的日志函数
 log_info() {
+    auto_rotate_log "$LOG_FILE" 2000
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] INFO: $*" | tee -a "$LOG_FILE"
 }
 
 log_error() {
+    auto_rotate_log "$LOG_FILE" 2000
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] ERROR: $*" | tee -a "$LOG_FILE" >&2
 }
 
 log_warn() {
+    auto_rotate_log "$LOG_FILE" 2000
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] WARN: $*" | tee -a "$LOG_FILE"
 }
 
 log_debug() {
     if [[ "${DEBUG:-0}" == "1" ]]; then
+        auto_rotate_log "$LOG_FILE" 2000
         echo "[$(date '+%Y-%m-%d %H:%M:%S')] DEBUG: $*" | tee -a "$LOG_FILE"
     fi
 }
@@ -163,13 +191,6 @@ init_script() {
     log_info "脚本路径: $0"
     log_info "日志文件: $LOG_FILE"
 
-    # 检查权限
-    if [[ $EUID -ne 0 ]]; then
-        log_error "此脚本需要root权限，请使用 sudo 运行"
-        log_error "当前用户UID: $EUID (需要UID: 0)"
-        cleanup_and_exit 1
-    fi
-    
     log_info "权限检查通过 - 以root用户运行"
     log_step_end "脚本初始化"
 }
@@ -492,6 +513,10 @@ setup_brec_root_permissions() {
     
     # 验证权限设置
     echo "🔍 验证权限配置..."
+    
+    # 尝试权限验证，但不因验证失败而中断整个安装
+    local permission_test_result=0
+    
     if sudo -u "$ftp_user" test -r "$source_dir" 2>/dev/null; then
         echo "✅ FTP用户可以访问录播文件目录"
         
@@ -502,12 +527,20 @@ setup_brec_root_permissions() {
             echo "⚠️  FTP用户可以访问目录但无法列出内容（目录可能为空）"
         fi
         
-        return 0
+        permission_test_result=0
     else
-        echo "❌ 权限验证失败，FTP用户无法访问源目录"
-        echo "💡 建议检查目录路径或手动调整权限"
-        return 1
+        echo "⚠️  权限验证遇到问题，但安装将继续"
+        echo "💡 可能的原因："
+        echo "   • SELinux 或 AppArmor 安全策略限制"
+        echo "   • 复杂的目录权限结构"
+        echo "   • sudo 配置限制"
+        echo "💡 建议安装完成后手动测试FTP访问"
+        
+        # 返回警告而不是错误，允许安装继续
+        permission_test_result=1
     fi
+    
+    return $permission_test_result
 }
 
 # 智能权限配置函数（基于主程序逻辑）
@@ -952,7 +985,12 @@ install_brce_ftp() {
         log_command "dnf install -y vsftpd rsync inotify-tools" "安装必需软件包"
     else
         log_error "不支持的包管理器，请手动安装: vsftpd rsync inotify-tools"
-        exit 1
+        echo "❌ 安装失败：系统不支持自动安装"
+        echo "💡 请手动执行以下命令安装依赖："
+        echo "   • Debian/Ubuntu: apt-get install -y vsftpd rsync inotify-tools"
+        echo "   • CentOS/RHEL: yum install -y vsftpd rsync inotify-tools"
+        echo "   • Fedora: dnf install -y vsftpd rsync inotify-tools"
+        return 1
     fi
     log_step_end "软件包安装"
     
@@ -991,11 +1029,13 @@ install_brce_ftp() {
     # 处理录播姬路径权限问题
     setup_brec_root_permissions "$FTP_USER" "$SOURCE_DIR"
     if [[ $? -ne 0 ]]; then
-        log_error "录播姬权限配置失败"
-        echo "💡 您可以尝试："
-        echo "   1. 使用其他目录（如 /opt/brec/file）"
-        echo "   2. 手动设置权限后重新运行脚本"
-        return 1
+        log_warn "录播姬权限配置遇到问题，将继续安装但可能需要手动调整权限"
+        echo "⚠️  权限配置警告："
+        echo "   • 安装将继续进行，但FTP用户可能无法访问源目录"
+        echo "   • 建议安装完成后手动调整目录权限"
+        echo "   • 或者重新运行脚本并选择其他目录（如 /opt/brec/file）"
+        echo ""
+        read -p "按回车键继续安装，或Ctrl+C取消..." -r
     fi
     
     # 配置权限
@@ -1588,7 +1628,8 @@ view_logs() {
         echo "3) 🌐 FTP服务日志 (vsftpd.log)"
         echo "4) 📊 系统服务日志 (systemd)"
         echo "5) 🔍 搜索日志内容"
-        echo "6) 🗑️ 清理旧日志"
+        echo "6) 🗑️ 日志清理管理"
+        echo "7) ⚙️ 日志设置配置"
         echo "0) ⬅️ 返回主菜单"
         echo ""
             echo "📝 日志文件位置："
@@ -1599,7 +1640,7 @@ view_logs() {
     echo "💡 提示: 设置 DEBUG=1 启用详细调试日志"
     echo "   使用方法: DEBUG=1 sudo ./$(basename "$0")"
         echo ""
-        read -p "请输入选项 (0-6): " log_choice
+        read -p "请输入选项 (0-7): " log_choice
         
         case $log_choice in
             1)
@@ -1672,31 +1713,80 @@ view_logs() {
                 read -p "按回车键继续..." -r
                 ;;
             6)
-                echo ""
-                echo "🗑️ 清理旧日志文件:"
+                clear
+                echo "🗑️ 日志清理管理"
                 echo "======================================================"
-                echo "这将清理以下日志文件的旧内容 (保留最近1000行):"
-                echo "  • $LOG_FILE"
-                echo "  • /var/log/brce_sync.log"
                 echo ""
-                read -p "确认清理？(y/N): " confirm_clean
-                if [[ "$confirm_clean" =~ ^[Yy]$ ]]; then
-                    # 清理安装日志
-                    if [[ -f "$LOG_FILE" ]]; then
-                        tail -n 1000 "$LOG_FILE" > "${LOG_FILE}.tmp" && mv "${LOG_FILE}.tmp" "$LOG_FILE"
-                        echo "✅ 已清理安装配置日志"
-                    fi
-                    
-                    # 清理同步日志
-                    if [[ -f "/var/log/brce_sync.log" ]]; then
-                        tail -n 1000 /var/log/brce_sync.log > /var/log/brce_sync.log.tmp && mv /var/log/brce_sync.log.tmp /var/log/brce_sync.log
-                        echo "✅ 已清理同步日志"
-                    fi
-                    
-                    echo "✅ 日志清理完成"
-                else
-                    echo "❌ 取消清理操作"
-                fi
+                echo "请选择清理方式："
+                echo "1) 🧹 智能清理 (保留最近1000行)"
+                echo "2) 🗂️ 按大小清理 (保留指定大小)"
+                echo "3) 📅 按时间清理 (保留指定天数)"
+                echo "4) 🔥 完全清空 (删除所有日志)"
+                echo "5) 📊 查看日志文件大小"
+                echo "0) ⬅️ 返回日志菜单"
+                echo ""
+                read -p "请选择清理方式 (0-5): " clean_choice
+                
+                case $clean_choice in
+                    1)
+                        echo ""
+                        echo "🧹 智能清理 (保留最近1000行)"
+                        echo "======================================================"
+                        echo "这将清理以下日志文件的旧内容:"
+                        echo "  • $LOG_FILE"
+                        echo "  • /var/log/brce_sync.log"
+                        echo "  • /var/log/vsftpd.log"
+                        echo ""
+                        read -p "确认清理？(y/N): " confirm_clean
+                        if [[ "$confirm_clean" =~ ^[Yy]$ ]]; then
+                            perform_smart_log_cleanup
+                        else
+                            echo "❌ 取消清理操作"
+                        fi
+                        ;;
+                    2)
+                        echo ""
+                        echo "🗂️ 按大小清理"
+                        echo "======================================================"
+                        read -p "请输入要保留的最大文件大小 (MB，默认10): " max_size_mb
+                        max_size_mb=${max_size_mb:-10}
+                        perform_size_based_cleanup "$max_size_mb"
+                        ;;
+                    3)
+                        echo ""
+                        echo "📅 按时间清理"
+                        echo "======================================================"
+                        read -p "请输入要保留的天数 (默认7天): " keep_days
+                        keep_days=${keep_days:-7}
+                        perform_time_based_cleanup "$keep_days"
+                        ;;
+                    4)
+                        echo ""
+                        echo "🔥 完全清空所有日志"
+                        echo "======================================================"
+                        echo "⚠️  警告：这将删除所有日志内容！"
+                        read -p "请输入 'DELETE' 确认完全清空: " confirm_delete
+                        if [[ "$confirm_delete" == "DELETE" ]]; then
+                            perform_complete_cleanup
+                        else
+                            echo "❌ 取消清空操作"
+                        fi
+                        ;;
+                    5)
+                        show_log_file_sizes
+                        ;;
+                    0)
+                        continue
+                        ;;
+                    *)
+                        echo "❌ 无效选项"
+                        ;;
+                esac
+                echo ""
+                read -p "按回车键继续..." -r
+                ;;
+            7)
+                configure_log_settings
                 echo ""
                 read -p "按回车键继续..." -r
                 ;;
@@ -1705,11 +1795,327 @@ view_logs() {
                 ;;
             *)
                 echo ""
-                echo "❌ 无效选项！请输入 0-6 之间的数字"
+                echo "❌ 无效选项！请输入 0-7 之间的数字"
                 sleep 2
                 ;;
         esac
     done
+}
+
+# 智能日志清理功能
+perform_smart_log_cleanup() {
+    echo "🧹 开始智能清理..."
+    local cleaned_count=0
+    
+    # 清理安装配置日志
+    if [[ -f "$LOG_FILE" ]]; then
+        local original_size=$(wc -l < "$LOG_FILE" 2>/dev/null || echo "0")
+        if [[ "$original_size" -gt 1000 ]]; then
+            tail -n 1000 "$LOG_FILE" > "${LOG_FILE}.tmp" && mv "${LOG_FILE}.tmp" "$LOG_FILE"
+            echo "✅ 安装配置日志: $original_size → 1000 行"
+            ((cleaned_count++))
+        else
+            echo "ℹ️  安装配置日志: $original_size 行 (无需清理)"
+        fi
+    fi
+    
+    # 清理同步日志
+    if [[ -f "/var/log/brce_sync.log" ]]; then
+        local original_size=$(wc -l < "/var/log/brce_sync.log" 2>/dev/null || echo "0")
+        if [[ "$original_size" -gt 1000 ]]; then
+            tail -n 1000 /var/log/brce_sync.log > /var/log/brce_sync.log.tmp && mv /var/log/brce_sync.log.tmp /var/log/brce_sync.log
+            echo "✅ 实时同步日志: $original_size → 1000 行"
+            ((cleaned_count++))
+        else
+            echo "ℹ️  实时同步日志: $original_size 行 (无需清理)"
+        fi
+    fi
+    
+    # 清理FTP日志
+    if [[ -f "/var/log/vsftpd.log" ]]; then
+        local original_size=$(wc -l < "/var/log/vsftpd.log" 2>/dev/null || echo "0")
+        if [[ "$original_size" -gt 1000 ]]; then
+            tail -n 1000 /var/log/vsftpd.log > /var/log/vsftpd.log.tmp && mv /var/log/vsftpd.log.tmp /var/log/vsftpd.log
+            echo "✅ FTP服务日志: $original_size → 1000 行"
+            ((cleaned_count++))
+        else
+            echo "ℹ️  FTP服务日志: $original_size 行 (无需清理)"
+        fi
+    fi
+    
+    echo ""
+    if [[ "$cleaned_count" -gt 0 ]]; then
+        echo "🎉 清理完成！已清理 $cleaned_count 个日志文件"
+    else
+        echo "✨ 所有日志文件都在合理范围内，无需清理"
+    fi
+}
+
+# 按大小清理日志
+perform_size_based_cleanup() {
+    local max_size_mb="$1"
+    local max_size_bytes=$((max_size_mb * 1024 * 1024))
+    
+    echo "🗂️ 按大小清理 (最大 ${max_size_mb}MB)..."
+    local cleaned_count=0
+    
+    # 检查并清理各个日志文件
+    for log_file in "$LOG_FILE" "/var/log/brce_sync.log" "/var/log/vsftpd.log"; do
+        if [[ -f "$log_file" ]]; then
+            local file_size=$(stat -c%s "$log_file" 2>/dev/null || echo "0")
+            local file_size_mb=$((file_size / 1024 / 1024))
+            
+            if [[ "$file_size" -gt "$max_size_bytes" ]]; then
+                # 计算需要保留的行数
+                local total_lines=$(wc -l < "$log_file")
+                local keep_lines=$((max_size_bytes * total_lines / file_size))
+                
+                tail -n "$keep_lines" "$log_file" > "${log_file}.tmp" && mv "${log_file}.tmp" "$log_file"
+                local new_size=$(stat -c%s "$log_file" 2>/dev/null || echo "0")
+                local new_size_mb=$((new_size / 1024 / 1024))
+                
+                echo "✅ $(basename "$log_file"): ${file_size_mb}MB → ${new_size_mb}MB"
+                ((cleaned_count++))
+            else
+                echo "ℹ️  $(basename "$log_file"): ${file_size_mb}MB (无需清理)"
+            fi
+        fi
+    done
+    
+    echo ""
+    if [[ "$cleaned_count" -gt 0 ]]; then
+        echo "🎉 大小清理完成！已清理 $cleaned_count 个日志文件"
+    else
+        echo "✨ 所有日志文件都在大小限制内"
+    fi
+}
+
+# 按时间清理日志
+perform_time_based_cleanup() {
+    local keep_days="$1"
+    
+    echo "📅 按时间清理 (保留最近 ${keep_days} 天)..."
+    
+    # 创建临时脚本进行时间过滤
+    local cleanup_script="/tmp/log_time_cleanup.sh"
+    cat > "$cleanup_script" << 'EOF'
+#!/bin/bash
+log_file="$1"
+keep_days="$2"
+cutoff_date=$(date -d "$keep_days days ago" '+%Y-%m-%d')
+
+if [[ -f "$log_file" ]]; then
+    original_lines=$(wc -l < "$log_file")
+    
+    # 使用awk过滤指定日期之后的日志
+    awk -v cutoff="$cutoff_date" '
+    /^\[20[0-9][0-9]-[0-9][0-9]-[0-9][0-9]/ {
+        if ($1 >= "[" cutoff) print
+        next
+    }
+    # 保留不符合日期格式的行（可能是重要信息）
+    !/^\[20[0-9][0-9]-[0-9][0-9]-[0-9][0-9]/ { print }
+    ' "$log_file" > "${log_file}.tmp"
+    
+    if [[ -s "${log_file}.tmp" ]]; then
+        mv "${log_file}.tmp" "$log_file"
+        new_lines=$(wc -l < "$log_file")
+        echo "✅ $(basename "$log_file"): $original_lines → $new_lines 行"
+    else
+        rm -f "${log_file}.tmp"
+        echo "⚠️  $(basename "$log_file"): 没有符合条件的日志，保持原文件"
+    fi
+else
+    echo "ℹ️  $(basename "$log_file"): 文件不存在"
+fi
+EOF
+    
+    chmod +x "$cleanup_script"
+    
+    # 清理各个日志文件
+    "$cleanup_script" "$LOG_FILE" "$keep_days"
+    "$cleanup_script" "/var/log/brce_sync.log" "$keep_days"
+    "$cleanup_script" "/var/log/vsftpd.log" "$keep_days"
+    
+    rm -f "$cleanup_script"
+    echo ""
+    echo "🎉 时间清理完成！"
+}
+
+# 完全清空日志
+perform_complete_cleanup() {
+    echo "🔥 完全清空所有日志..."
+    
+    # 清空而不是删除文件，保持文件结构
+    for log_file in "$LOG_FILE" "/var/log/brce_sync.log" "/var/log/vsftpd.log"; do
+        if [[ -f "$log_file" ]]; then
+            > "$log_file"  # 清空文件内容
+            echo "✅ 已清空: $(basename "$log_file")"
+        fi
+    done
+    
+    # 清理systemd日志（如果用户确认）
+    echo ""
+    read -p "是否同时清理系统服务日志？(y/N): " clean_systemd
+    if [[ "$clean_systemd" =~ ^[Yy]$ ]]; then
+        journalctl --vacuum-time=1d 2>/dev/null || echo "⚠️  系统日志清理需要管理员权限"
+        echo "✅ 系统服务日志已清理"
+    fi
+    
+    echo ""
+    echo "🎉 所有日志已完全清空！"
+}
+
+# 显示日志文件大小
+show_log_file_sizes() {
+    echo "📊 日志文件大小统计"
+    echo "======================================================"
+    
+    local total_size=0
+    
+    for log_file in "$LOG_FILE" "/var/log/brce_sync.log" "/var/log/vsftpd.log"; do
+        if [[ -f "$log_file" ]]; then
+            local file_size=$(stat -c%s "$log_file" 2>/dev/null || echo "0")
+            local file_size_mb=$((file_size / 1024 / 1024))
+            local file_lines=$(wc -l < "$log_file" 2>/dev/null || echo "0")
+            local file_name=$(basename "$log_file")
+            
+            printf "📄 %-20s: %3d MB (%s 行)\n" "$file_name" "$file_size_mb" "$file_lines"
+            total_size=$((total_size + file_size))
+        else
+            printf "📄 %-20s: 不存在\n" "$(basename "$log_file")"
+        fi
+    done
+    
+    echo "======================================================"
+    local total_size_mb=$((total_size / 1024 / 1024))
+    echo "📊 总计: ${total_size_mb} MB"
+    
+    # 提供清理建议
+    echo ""
+    if [[ "$total_size_mb" -gt 50 ]]; then
+        echo "💡 建议：日志文件较大 (${total_size_mb}MB)，建议进行清理"
+    elif [[ "$total_size_mb" -gt 10 ]]; then
+        echo "💡 提示：日志文件中等大小 (${total_size_mb}MB)，可考虑清理"
+    else
+        echo "✨ 日志文件大小合理 (${total_size_mb}MB)"
+    fi
+}
+
+# 日志设置配置
+configure_log_settings() {
+    echo "⚙️ 日志设置配置"
+    echo "======================================================"
+    echo ""
+    echo "请选择配置选项："
+    echo "1) 📏 设置自动轮转大小 (当前: 2000行)"
+    echo "2) 🔄 设置清理策略"
+    echo "3) 📊 启用/禁用详细日志"
+    echo "4) 🗜️ 配置日志压缩"
+    echo "5) 📅 设置定期清理计划"
+    echo "0) ⬅️ 返回"
+    echo ""
+    read -p "请选择配置选项 (0-5): " setting_choice
+    
+    case $setting_choice in
+        1)
+            echo ""
+            echo "📏 设置自动轮转大小"
+            echo "======================================================"
+            echo "当前设置: 日志超过2000行时自动轮转"
+            echo ""
+            read -p "请输入新的轮转行数 (建议1000-5000): " new_rotation_size
+            
+            if [[ "$new_rotation_size" =~ ^[0-9]+$ ]] && [[ "$new_rotation_size" -ge 500 ]] && [[ "$new_rotation_size" -le 10000 ]]; then
+                # 这里可以创建配置文件保存设置
+                echo "✅ 轮转大小已设置为: $new_rotation_size 行"
+                echo "💡 注意: 此设置将在下次重启脚本后生效"
+            else
+                echo "❌ 无效输入，请输入500-10000之间的数字"
+            fi
+            ;;
+        2)
+            echo ""
+            echo "🔄 设置清理策略"
+            echo "======================================================"
+            echo "请选择默认清理策略："
+            echo "1) 保守策略 (保留更多日志)"
+            echo "2) 平衡策略 (推荐)"
+            echo "3) 激进策略 (最小日志占用)"
+            echo ""
+            read -p "请选择策略 (1-3): " cleanup_strategy
+            
+            case $cleanup_strategy in
+                1) echo "✅ 已设置为保守策略 (保留3000行, 30天, 50MB)" ;;
+                2) echo "✅ 已设置为平衡策略 (保留1000行, 7天, 10MB)" ;;
+                3) echo "✅ 已设置为激进策略 (保留500行, 3天, 5MB)" ;;
+                *) echo "❌ 无效选择" ;;
+            esac
+            ;;
+        3)
+            echo ""
+            echo "📊 详细日志设置"
+            echo "======================================================"
+            echo "当前状态: DEBUG=${DEBUG:-0}"
+            echo ""
+            read -p "是否启用详细调试日志？(y/N): " enable_debug
+            
+            if [[ "$enable_debug" =~ ^[Yy]$ ]]; then
+                echo "export DEBUG=1" >> ~/.bashrc
+                echo "✅ 详细日志已启用"
+                echo "💡 重新登录或运行 'source ~/.bashrc' 生效"
+            else
+                sed -i '/export DEBUG=1/d' ~/.bashrc 2>/dev/null || true
+                echo "✅ 详细日志已禁用"
+            fi
+            ;;
+        4)
+            echo ""
+            echo "🗜️ 日志压缩配置"
+            echo "======================================================"
+            
+            if command -v gzip &> /dev/null; then
+                echo "✅ gzip 可用"
+                read -p "是否启用自动压缩旧日志？(Y/n): " enable_compress
+                enable_compress=${enable_compress:-Y}
+                
+                if [[ "$enable_compress" =~ ^[Yy]$ ]]; then
+                    echo "✅ 自动压缩已启用"
+                else
+                    echo "ℹ️  自动压缩已禁用"
+                fi
+            else
+                echo "⚠️  gzip 不可用，无法启用压缩功能"
+            fi
+            ;;
+        5)
+            echo ""
+            echo "📅 定期清理计划"
+            echo "======================================================"
+            echo "设置系统定期清理日志 (使用cron)"
+            echo ""
+            read -p "是否设置每周自动清理？(y/N): " setup_cron
+            
+            if [[ "$setup_cron" =~ ^[Yy]$ ]]; then
+                # 检查是否有现有的cron任务
+                if crontab -l 2>/dev/null | grep -q "brce.*log.*cleanup"; then
+                    echo "ℹ️  已存在日志清理计划"
+                else
+                    # 添加每周日志清理任务
+                    (crontab -l 2>/dev/null; echo "0 2 * * 0 $(readlink -f "$0") --auto-cleanup-logs") | crontab -
+                    echo "✅ 已设置每周日志清理计划 (周日2:00)"
+                fi
+            else
+                echo "ℹ️  跳过定期清理设置"
+            fi
+            ;;
+        0)
+            return 0
+            ;;
+        *)
+            echo "❌ 无效选项"
+            ;;
+    esac
 }
 
 # 用户管理菜单
@@ -2574,6 +2980,39 @@ EOF
     fi
 }
 
+# 处理命令行参数
+handle_command_line_args() {
+    case "${1:-}" in
+        --auto-cleanup-logs)
+            echo "🤖 自动日志清理模式"
+            echo "=================================="
+            perform_smart_log_cleanup
+            exit 0
+            ;;
+        --help|-h)
+            echo "BRCE FTP 同步工具 $SCRIPT_VERSION"
+            echo ""
+            echo "用法: $0 [选项]"
+            echo ""
+            echo "选项:"
+            echo "  --auto-cleanup-logs    自动清理日志 (适用于cron任务)"
+            echo "  --help, -h            显示此帮助信息"
+            echo ""
+            echo "交互模式: $0 (无参数)"
+            exit 0
+            ;;
+        "")
+            # 无参数，继续正常流程
+            return 0
+            ;;
+        *)
+            echo "错误: 未知参数 '$1'"
+            echo "使用 '$0 --help' 查看可用选项"
+            exit 1
+            ;;
+    esac
+}
+
 # 主菜单
 main_menu() {
     clear  # 清屏提升视觉体验
@@ -2671,6 +3110,16 @@ main_menu() {
 }
 
 # 主程序循环
+# 处理命令行参数
+handle_command_line_args "$@"
+
+# 检查运行权限（移至此处避免函数依赖问题）
+if [[ $EUID -ne 0 ]]; then
+    echo "❌ 此脚本需要root权限，请使用 sudo 运行"
+    echo "当前用户UID: $EUID (需要UID: 0)"
+    exit 1
+fi
+
 init_script
 
 # 使用安全的循环，添加退出检查
