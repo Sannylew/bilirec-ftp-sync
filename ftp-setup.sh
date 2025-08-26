@@ -1274,7 +1274,11 @@ change_ftp_password() {
     
     # 先列出所有用户
     if ! list_ftp_users; then
-        echo "请先创建FTP用户"
+        echo ""
+        echo "❌ 没有FTP用户"
+        echo "💡 请先创建FTP用户"
+        echo ""
+        read -p "按回车键返回用户管理菜单..." -r
         return 1
     fi
     
@@ -1284,12 +1288,22 @@ change_ftp_password() {
     # 验证用户是否存在
     if ! id "$target_user" &>/dev/null; then
         log_error "用户 $target_user 不存在"
+        echo ""
+        echo "❌ 用户不存在"
+        echo "💡 请检查用户名是否正确"
+        echo ""
+        read -p "按回车键返回用户管理菜单..." -r
         return 1
     fi
     
     # 检查是否为FTP用户
     if [[ ! -d "/home/$target_user/ftp" ]]; then
         log_error "用户 $target_user 不是FTP用户"
+        echo ""
+        echo "❌ 该用户不是FTP用户"
+        echo "💡 请选择正确的FTP用户"
+        echo ""
+        read -p "按回车键返回用户管理菜单..." -r
         return 1
     fi
     
@@ -1567,12 +1581,22 @@ delete_ftp_user() {
     # 验证用户是否存在
     if ! id "$target_user" &>/dev/null; then
         log_error "用户 $target_user 不存在"
+        echo ""
+        echo "❌ 用户不存在"
+        echo "💡 请检查用户名是否正确"
+        echo ""
+        read -p "按回车键返回用户管理菜单..." -r
         return 1
     fi
     
     # 检查是否为FTP用户
     if [[ ! -d "/home/$target_user/ftp" ]]; then
         log_error "用户 $target_user 不是FTP用户"
+        echo ""
+        echo "❌ 该用户不是FTP用户"
+        echo "💡 请选择正确的FTP用户"
+        echo ""
+        read -p "按回车键返回用户管理菜单..." -r
         return 1
     fi
     
@@ -2324,7 +2348,13 @@ test_realtime_sync() {
     # 检查配置是否有效
     if [[ "$FTP_USER" == "unknown" || "$SOURCE_DIR" == "unknown" ]]; then
         log_error "未找到有效的FTP配置，请先运行安装配置"
-        echo "提示：选择菜单选项 1) 安装/配置BRCE FTP服务"
+        echo ""
+        echo "❌ 无法进行同步测试"
+        echo "💡 解决方案："
+        echo "   1. 选择菜单选项 1) 安装/配置BRCE FTP服务"
+        echo "   2. 确保FTP服务已正确安装配置"
+        echo ""
+        read -p "按回车键返回主菜单..." -r
         return 1
     fi
     
@@ -2340,11 +2370,21 @@ test_realtime_sync() {
     # 验证目录存在
     if [[ ! -d "$SOURCE_DIR" ]]; then
         log_error "源目录不存在: $SOURCE_DIR"
+        echo ""
+        echo "❌ 源目录不存在，无法进行测试"
+        echo "💡 请检查源目录配置或重新运行安装"
+        echo ""
+        read -p "按回车键返回主菜单..." -r
         return 1
     fi
     
     if [[ ! -d "$FTP_HOME" ]]; then
         log_error "FTP目录不存在: $FTP_HOME"
+        echo ""
+        echo "❌ FTP目录不存在，无法进行测试"
+        echo "💡 请检查FTP用户配置或重新运行安装"
+        echo ""
+        read -p "按回车键返回主菜单..." -r
         return 1
     fi
     
@@ -2900,6 +2940,10 @@ uninstall_brce_ftp() {
     read -p "⚠️ 确定要卸载BRCE FTP服务吗？(y/N): " confirm
     if [[ ! "$confirm" =~ ^[Yy]$ ]]; then
         log_info "用户取消卸载"
+        echo ""
+        echo "✅ 取消卸载操作"
+        echo ""
+        read -p "按回车键返回主菜单..." -r
         return 1
     fi
     
