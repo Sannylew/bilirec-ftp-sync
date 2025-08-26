@@ -603,6 +603,7 @@ ls_recurse_enable=NO
 use_sendfile=NO
 EOF
 
+    log_info "vsftpd配置文件生成完成"
     echo "✅ 配置文件已生成"
 }
 
@@ -1030,34 +1031,75 @@ install_brce_ftp() {
     create_sync_service "$FTP_USER"
     
     # 生成配置
+    log_step_start "vsftpd配置生成"
     generate_optimal_config "$ftp_home"
+    log_step_end "vsftpd配置生成"
     
     # 启动服务
+    log_step_start "FTP服务启动"
+    log_info "启动FTP服务..."
     echo "🔄 启动FTP服务..."
     echo "   • 正在重启vsftpd服务..."
-    systemctl restart vsftpd
+    if systemctl restart vsftpd; then
+        log_info "vsftpd服务重启成功"
+    else
+        log_error "vsftpd服务重启失败"
+        return 1
+    fi
+    
     echo "   • 正在设置开机自启..."
-    systemctl enable vsftpd
+    if systemctl enable vsftpd; then
+        log_info "vsftpd开机自启设置成功"
+    else
+        log_warn "vsftpd开机自启设置失败"
+    fi
     echo "   ✅ FTP服务启动完成"
+    log_step_end "FTP服务启动"
     
     # 启动实时同步服务
+    log_step_start "实时同步服务启动"
     start_sync_service
+    log_step_end "实时同步服务启动"
     
     # 配置防火墙（基于主程序逻辑）
+    log_step_start "防火墙配置"
+    log_info "配置防火墙规则..."
     echo "🔥 配置防火墙..."
     if command -v ufw &> /dev/null; then
+        log_info "使用UFW配置防火墙"
         ufw allow 21/tcp >/dev/null 2>&1 || true
         ufw allow 40000:40100/tcp >/dev/null 2>&1 || true
+        log_info "UFW防火墙规则配置完成"
         echo "✅ UFW: 已开放FTP端口"
     elif command -v firewall-cmd &> /dev/null; then
+        log_info "使用Firewalld配置防火墙"
         firewall-cmd --permanent --add-service=ftp >/dev/null 2>&1 || true
         firewall-cmd --permanent --add-port=40000-40100/tcp >/dev/null 2>&1 || true
         firewall-cmd --reload >/dev/null 2>&1 || true
+        log_info "Firewalld防火墙规则配置完成"
         echo "✅ Firewalld: 已开放FTP端口"
+    else
+        log_warn "未检测到支持的防火墙工具，请手动开放端口21和40000-40100"
     fi
+    log_step_end "防火墙配置"
     
     # 获取服务器IP（基于主程序逻辑）
+    log_step_start "获取连接信息"
+    log_info "获取服务器连接信息..."
     external_ip=$(curl -s --max-time 5 ifconfig.me 2>/dev/null || hostname -I | awk '{print $1}' || echo "localhost")
+    log_info "服务器IP: $external_ip"
+    
+    log_step_end "获取连接信息"
+    
+    # 记录安装完成
+    log_step_start "安装完成"
+    log_info "BRCE FTP服务部署完成！"
+    log_info "FTP用户: $FTP_USER"
+    log_info "服务器IP: $external_ip"
+    log_info "FTP端口: 21"
+    log_info "访问目录: $SOURCE_DIR"
+    log_info "实时同步: 已启用"
+    log_step_end "安装完成"
     
     echo ""
     echo "======================================================"
@@ -1091,7 +1133,13 @@ install_brce_ftp() {
     echo "   📁 root操作源目录，立即可见"
     echo "   📤 FTP用户操作，源目录立即更新"
     echo ""
-    echo "🔄 可通过菜单选项6随时在线更新到最新版"
+    echo "🔄 可通过菜单选项8随时在线更新到最新版"
+    
+    # 最终记录安装成功
+    log_step_start "FTP服务安装部署总结"
+    log_info "✅ FTP服务安装部署成功完成"
+    log_info "所有步骤已执行完毕，服务正常运行"
+    log_step_end "FTP服务安装部署总结"
 }
 
 # 列出所有FTP用户
