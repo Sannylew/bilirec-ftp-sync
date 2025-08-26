@@ -364,7 +364,7 @@ install_ftp_lite() {
     read -p "🔐 自动生成密码？(Y/n): " auto_pwd
     auto_pwd=${auto_pwd:-Y}
     
-    if [[ "$auto_pwd" =~ ^[Yy]$ ]]; then
+        if [[ "$auto_pwd" =~ ^[Yy]$ ]]; then
         ftp_password=$(generate_password 12)
         log_info "已自动生成密码"
     else
@@ -385,10 +385,10 @@ install_ftp_lite() {
     # 显示配置信息
     echo ""
     echo "📋 安装配置："
-    echo "   📁 源目录: $source_dir"
+    echo "   📁 录制目录: $recording_dir"
     echo "   👤 FTP用户: $ftp_user"
-    echo "   🔧 登录方式: 用户被限制在家目录内，登录后进入根目录"
-    echo "   📁 FTP目录: /home/$ftp_user/ftp (读写映射到 $source_dir)"
+    echo "   🔧 登录方式: 用户直接访问录制目录，无chroot限制"
+    echo "   📁 FTP目录: $recording_dir (与录制目录相同)"
     echo "   📁 用户权限: 可以读取、写入、删除文件"
     echo ""
     
