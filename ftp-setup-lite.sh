@@ -169,10 +169,13 @@ create_ftp_user() {
     local ftp_home="/home/$username/ftp"
     mkdir -p "$ftp_home"
     
-    # 设置权限 - 重要：让用户的家目录指向ftp目录
+    # 关键：chroot环境下的权限设置
+    # 家目录的父目录必须属于root且不能被其他用户写入
     chown root:root "/home/$username"
     chmod 755 "/home/$username"
-    chown "$username:$username" "$ftp_home"
+    
+    # ftp目录初始权限设置
+    chown root:root "$ftp_home"
     chmod 755 "$ftp_home"
     
     # 修改用户家目录指向ftp目录，这样用户登录后直接到ftp目录
@@ -182,19 +185,19 @@ create_ftp_user() {
     log_info "创建读写映射: $source_dir -> $ftp_home"
     mount --bind "$source_dir" "$ftp_home"
     
-    # 设置源目录权限，确保FTP用户可以写入
-    chmod 755 "$source_dir"
-    
-    # 确保FTP用户对源目录有完整权限
-    chown root:ftp-users "$source_dir" 2>/dev/null || true
-    chmod 775 "$source_dir" 2>/dev/null || true
-    
-    # 设置ftp目录权限
+    # bind mount后重新设置权限
+    # 重要：bind mount后需要重新设置挂载点的权限
     chown "$username:ftp-users" "$ftp_home"
     chmod 755 "$ftp_home"
     
-    # 确保父目录可访问
-    chmod 755 "/home/$username" 2>/dev/null || true
+    # 设置源目录权限（这会影响到挂载点）
+    chmod 755 "$source_dir"
+    chown root:ftp-users "$source_dir" 2>/dev/null || true
+    chmod 775 "$source_dir" 2>/dev/null || true
+    
+    # 确保父目录权限正确（chroot要求）
+    chown root:root "/home/$username"
+    chmod 755 "/home/$username"
     
     # 添加到fstab以实现开机自动挂载
     local fstab_entry="$source_dir $ftp_home none bind 0 0"
@@ -227,18 +230,29 @@ fix_ftp_permissions() {
             local username=$(basename $(dirname "$user_home"))
             echo "🔧 修复用户 $username 的权限..."
             
-            # 修复用户目录权限
-            chown "$username:ftp-users" "$user_home"
-            chmod 755 "$user_home"
+            # 修复chroot目录权限（关键！）
+            echo "   🔧 修复chroot权限结构..."
+            chown root:root "/home/$username"
             chmod 755 "/home/$username"
             
-            # 如果有挂载点，修复源目录权限
+            # 修复挂载点权限
             if mountpoint -q "$user_home"; then
                 local source_dir=$(findmnt -n -o SOURCE "$user_home")
                 echo "   📁 修复源目录权限: $source_dir"
+                
+                # 先设置源目录权限
                 chmod 775 "$source_dir"
                 chown root:ftp-users "$source_dir" 2>/dev/null || true
+                
+                # 再设置挂载点权限
+                chown "$username:ftp-users" "$user_home"
+                chmod 755 "$user_home"
+            else
+                echo "   ⚠️ 警告: $user_home 不是挂载点，可能需要重新挂载"
             fi
+            
+            # 确保用户在ftp-users组中
+            usermod -a -G ftp-users "$username" 2>/dev/null || true
             
             echo "   ✅ 用户 $username 权限修复完成"
             fixed=true
@@ -253,6 +267,19 @@ fix_ftp_permissions() {
             echo "✅ 服务重启成功"
         else
             echo "❌ 服务重启失败"
+        fi
+        echo ""
+        echo "🔍 权限诊断信息："
+        echo "   - vsftpd配置: /etc/vsftpd.conf"
+        echo "   - 检查配置: allow_writeable_chroot=YES"
+        if grep -q "allow_writeable_chroot=YES" /etc/vsftpd.conf 2>/dev/null; then
+            echo "   ✅ chroot配置正确"
+        else
+            echo "   ❌ 缺少 allow_writeable_chroot=YES 配置"
+            echo ""
+            echo "🔧 添加缺失配置..."
+            echo "allow_writeable_chroot=YES" >> /etc/vsftpd.conf
+            echo "   ✅ 已添加 allow_writeable_chroot=YES"
         fi
         echo ""
         echo "🎉 权限修复完成！请重新尝试FTP操作"
