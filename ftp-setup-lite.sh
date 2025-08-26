@@ -99,8 +99,6 @@ install_vsftpd() {
 
 # 生成配置文件
 generate_vsftpd_config() {
-    local ftp_home="$1"
-    
     # 备份原配置
     if [[ -f "/etc/vsftpd.conf" ]]; then
         cp "/etc/vsftpd.conf" "/etc/vsftpd.conf.backup.$(date +%Y%m%d_%H%M%S)"
@@ -114,7 +112,8 @@ listen=YES
 listen_ipv6=NO
 anonymous_enable=NO
 local_enable=YES
-write_enable=NO
+write_enable=YES
+delete_enable=YES
 local_umask=022
 dirmessage_enable=YES
 use_localtime=YES
@@ -134,7 +133,7 @@ pasv_max_port=40100
 pasv_address=
 EOF
 
-    log_info "vsftpd 配置文件已生成"
+    log_info "vsftpd 配置文件已生成 - 用户被限制在家目录内"
 }
 
 # 创建FTP用户
@@ -143,11 +142,19 @@ create_ftp_user() {
     local password="$2"
     local source_dir="$3"
     
+    # 检查源目录
+    if [[ ! -d "$source_dir" ]]; then
+        log_error "源目录不存在: $source_dir"
+        return 1
+    fi
+    
     # 检查用户是否已存在
     if id "$username" &>/dev/null; then
         log_warn "用户 $username 已存在，将重新配置"
+        # 清理旧的挂载点
+        cleanup_existing_user "$username"
     else
-        # 创建用户
+        # 创建用户，但家目录设为/home/username/ftp
         useradd -m -s /bin/bash "$username"
         log_info "已创建用户: $username"
     fi
@@ -160,30 +167,59 @@ create_ftp_user() {
     local ftp_home="/home/$username/ftp"
     mkdir -p "$ftp_home"
     
-    # 设置权限
+    # 设置权限 - 重要：让用户的家目录指向ftp目录
     chown root:root "/home/$username"
     chmod 755 "/home/$username"
     chown "$username:$username" "$ftp_home"
     chmod 755 "$ftp_home"
     
-    # 创建只读bind mount映射
-    if [[ -d "$source_dir" ]]; then
-        log_info "创建只读映射: $source_dir -> $ftp_home"
-        mount --bind "$source_dir" "$ftp_home"
-        mount -o remount,ro,bind "$ftp_home"
-        
-        # 添加到fstab以实现开机自动挂载
-        local fstab_entry="$source_dir $ftp_home none bind,ro 0 0"
-        if ! grep -q "$ftp_home" /etc/fstab; then
-            echo "$fstab_entry" >> /etc/fstab
-            log_info "已添加到 /etc/fstab 实现开机自动挂载"
-        fi
-    else
-        log_error "源目录不存在: $source_dir"
-        return 1
+    # 修改用户家目录指向ftp目录，这样用户登录后直接到ftp目录
+    usermod -d "$ftp_home" "$username"
+    
+    # 创建读写bind mount映射
+    log_info "创建读写映射: $source_dir -> $ftp_home"
+    mount --bind "$source_dir" "$ftp_home"
+    
+    # 设置源目录权限，确保FTP用户可以写入
+    chmod 755 "$source_dir"
+    chgrp ftp-users "$source_dir" 2>/dev/null || true
+    chmod g+w "$source_dir" 2>/dev/null || true
+    
+    # 添加到fstab以实现开机自动挂载
+    local fstab_entry="$source_dir $ftp_home none bind 0 0"
+    if ! grep -q "$ftp_home" /etc/fstab; then
+        echo "$fstab_entry" >> /etc/fstab
+        log_info "已添加到 /etc/fstab 实现开机自动挂载"
     fi
     
-    log_info "FTP用户配置完成"
+    # 创建FTP用户组（用于管理和识别）
+    if ! getent group ftp-users >/dev/null; then
+        groupadd ftp-users
+        log_info "已创建 ftp-users 用户组"
+    fi
+    usermod -a -G ftp-users "$username"
+    
+    log_info "FTP用户配置完成 - 用户登录后直接在 $ftp_home，可以读写删除源目录内容"
+}
+
+# 清理已存在用户的配置
+cleanup_existing_user() {
+    local username="$1"
+    local user_home=$(getent passwd "$username" | cut -d: -f6)
+    
+    # 如果有旧的挂载点，先卸载
+    if [[ -n "$user_home" && -d "$user_home/ftp" ]]; then
+        if mountpoint -q "$user_home/ftp" 2>/dev/null; then
+            log_info "卸载旧的挂载点: $user_home/ftp"
+            umount "$user_home/ftp" 2>/dev/null || true
+        fi
+        
+        # 从fstab中移除旧条目
+        if grep -q "$user_home/ftp" /etc/fstab 2>/dev/null; then
+            log_info "从 /etc/fstab 移除旧挂载条目"
+            sed -i "\|$user_home/ftp|d" /etc/fstab
+        fi
+    fi
 }
 
 # 启动服务
@@ -313,7 +349,9 @@ install_ftp_lite() {
     echo "📋 安装配置："
     echo "   📁 源目录: $source_dir"
     echo "   👤 FTP用户: $ftp_user"
-    echo "   🔗 映射方式: 只读bind mount"
+    echo "   🔧 登录方式: 用户被限制在家目录内，登录后进入根目录"
+    echo "   📁 FTP目录: /home/$ftp_user/ftp (读写映射到 $source_dir)"
+    echo "   📁 用户权限: 可以读取、写入、删除文件"
     echo ""
     
     read -p "确认开始安装？(Y/n): " confirm
@@ -347,7 +385,7 @@ install_ftp_lite() {
     
     # 生成配置
     log_info "正在生成配置文件..."
-    generate_vsftpd_config "/home/$ftp_user/ftp"
+    generate_vsftpd_config
     
     # 配置防火墙
     configure_firewall
@@ -373,13 +411,17 @@ install_ftp_lite() {
     echo "   🔌 FTP端口: 21"
     echo "   👤 用户名: $ftp_user"
     echo "   🔐 密码: $ftp_password"
-    echo "   📁 FTP目录: /home/$ftp_user/ftp (映射到 $source_dir)"
+    echo "   📁 登录目录: / (用户被限制在家目录内，显示为根目录)"
+    echo "   📁 实际目录: /home/$ftp_user/ftp (映射到 $source_dir)"
+    
     echo ""
     echo "💡 特性说明："
-    echo "   • 🔗 只读映射: 录播文件实时可见，无法修改"
-    echo "   • 🚀 零延迟: 录制文件立即出现在FTP目录"
+    echo "   • 📍 安全限制: 用户被限制在家目录内，无法访问其他系统目录"
+    echo "   • 🔗 读写映射: 该目录映射到录播文件目录，支持读写"
+    echo "   • 🚀 实时可见: 录制文件立即显示"
     echo "   • 🛡️ 完全兼容: 不会干扰录播姬录制过程"
-    echo "   • 💾 零消耗: 无后台同步进程，不占用系统资源"
+    echo "   • 💾 零消耗: 无后台进程，直接bind mount"
+    echo "   • ✏️ 完整权限: 用户可以下载、上传、删除、重命名文件"
     echo ""
     echo "🔧 常用命令："
     echo "   • 重启FTP服务: sudo systemctl restart vsftpd"
@@ -416,16 +458,19 @@ show_status() {
     echo ""
     echo "📋 FTP用户列表:"
     local ftp_users_found=false
+    
+    # 检查FTP用户（通过检查/home/*/ftp目录）
     for user_home in /home/*/ftp; do
         if [[ -d "$user_home" ]]; then
             local username=$(basename $(dirname "$user_home"))
             echo "   👤 $username"
+            echo "      📁 家目录: $user_home"
             
             # 检查映射状态
             if mountpoint -q "$user_home"; then
                 echo "      🔗 映射状态: 已映射"
                 local source_dir=$(findmnt -n -o SOURCE "$user_home")
-                echo "      📁 源目录: $source_dir"
+                echo "      📁 映射源: $source_dir"
             else
                 echo "      ❌ 映射状态: 未映射"
             fi
@@ -474,12 +519,16 @@ list_users() {
     echo ""
     echo "📋 当前FTP用户："
     local count=0
+    
+    # 显示FTP用户（通过检查/home/*/ftp目录）
     for user_home in /home/*/ftp; do
         if [[ -d "$user_home" ]]; then
             local username=$(basename $(dirname "$user_home"))
             ((count++))
             echo "$count. 👤 $username"
-            echo "   📁 FTP目录: $user_home"
+            echo "   📁 家目录: $user_home"
+            
+            # 检查映射状态
             if mountpoint -q "$user_home"; then
                 local source_dir=$(findmnt -n -o SOURCE "$user_home")
                 echo "   🔗 映射到: $source_dir"
@@ -516,12 +565,8 @@ add_user() {
         return 1
     fi
     
-    read -p "📁 请输入要映射的源目录: " source_dir
-    if [[ -z "$source_dir" ]]; then
-        log_error "源目录不能为空"
-        read -p "按回车键返回..." -r
-        return 1
-    fi
+    read -p "📁 请输入要映射的源目录 (默认: /root/brec/file): " source_dir
+    source_dir=${source_dir:-/root/brec/file}
     
     if [[ ! -d "$source_dir" ]]; then
         log_error "源目录不存在: $source_dir"
@@ -537,6 +582,8 @@ add_user() {
     echo "   👤 用户名: $new_username"
     echo "   🔐 密码: $new_password"
     echo "   📁 源目录: $source_dir"
+    echo "   📁 FTP目录: /home/$new_username/ftp (读写映射到 $source_dir)"
+    echo "   📁 用户权限: 可以读取、写入、删除文件"
     echo ""
     
     read -p "确认添加此用户？(Y/n): " confirm
@@ -548,6 +595,8 @@ add_user() {
             echo "✅ 用户添加成功！"
             echo "   👤 用户名: $new_username"
             echo "   🔐 密码: $new_password"
+            echo "   📁 用户家目录: /home/$new_username/ftp"
+            echo "   🔗 映射源目录: $source_dir (读写权限)"
         else
             log_error "用户添加失败"
         fi

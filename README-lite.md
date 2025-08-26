@@ -67,6 +67,7 @@ sudo ./ftp-setup-lite.sh
 
 ## 📁 **目录结构**
 
+### 🎯 **用户家目录映射方式**
 ```
 源目录（录播姬）:
 /root/brec/file/
@@ -74,29 +75,51 @@ sudo ./ftp-setup-lite.sh
 ├── 房间2/
 └── video.mp4
 
-FTP目录（只读映射）:
-/home/用户名/ftp/          # 直接映射到源目录
-├── 房间1/                # 实时可见录播文件
-├── 房间2/                # 实时可见录播文件
-└── video.mp4             # 实时可见录播文件
+用户家目录设置:
+/home/username/ftp/       # 用户家目录指向此处
+├── 房间1/                # bind mount读写映射录播文件
+├── 房间2/                # bind mount读写映射录播文件  
+└── video.mp4             # bind mount读写映射录播文件
+
+FTP用户登录后:
+/                         # 用户看到的根目录（实际是/home/username/ftp）
+├── 房间1/                # 可以读写删除的源目录内容
+├── 房间2/                # 可以读写删除的源目录内容
+└── video.mp4             # 可以读写删除的源目录内容
 ```
+
+**核心原理**: 通过设置用户家目录为`/home/username/ftp`，并使用读写bind mount将源目录映射到该位置，用户登录后可以完整操作录播文件。
 
 ## 💡 **技术实现**
 
-### 🔗 bind mount映射
+### 🎯 **用户家目录 + bind mount 配置**
 ```bash
-# 创建只读映射
-mount --bind /root/brec/file /home/用户名/ftp
-mount -o remount,ro,bind /home/用户名/ftp
+# 1. 创建用户和目录结构
+useradd -m -s /bin/bash username           # 创建标准用户
+mkdir -p /home/username/ftp               # 创建FTP目录
+usermod -d /home/username/ftp username    # 设置家目录为ftp目录
 
-# 自动开机挂载
-echo "/root/brec/file /home/用户名/ftp none bind,ro 0 0" >> /etc/fstab
+# 2. 创建读写bind mount映射
+mount --bind /root/brec/file /home/username/ftp
+
+# 3. 设置权限
+chmod 755 /root/brec/file                 # 确保源目录可访问
+chgrp ftp-users /root/brec/file           # 设置用户组
+chmod g+w /root/brec/file                 # 添加写权限
+
+# 4. 开机自动挂载
+echo "/root/brec/file /home/username/ftp none bind 0 0" >> /etc/fstab
+
+# 5. vsftpd.conf 配置
+chroot_local_user=YES         # 限制用户在家目录内
+write_enable=YES              # 启用写入
+delete_enable=YES             # 启用删除
 ```
 
 ### 🛡️ 权限设置
-- **FTP用户**: 只读权限，可下载不可修改
-- **录播文件**: 保持原始权限不变
-- **目录映射**: 只读保护，完全安全
+- **FTP用户**: 完整权限，可以读取、写入、删除文件
+- **录播文件**: 保持原始权限，通过映射提供访问
+- **目录映射**: 读写访问，支持文件管理操作
 
 ## 🆚 **版本对比**
 
@@ -106,8 +129,9 @@ echo "/root/brec/file /home/用户名/ftp none bind,ro 0 0" >> /etc/fstab
 | **资源消耗** | 📊 后台同步进程 | 💾 零消耗 |
 | **实时性** | 🚀 实时同步 | 🚀 实时映射 |
 | **双向同步** | ✅ 支持 | ❌ 只读 |
-| **用户上传** | ✅ 支持 | ❌ 不支持 |
-| **文件修改** | ✅ 支持 | ❌ 只读保护 |
+| **用户上传** | ✅ 支持 | ✅ 支持 |
+| **文件修改** | ✅ 支持 | ✅ 支持 |
+| **文件删除** | ✅ 支持 | ✅ 支持 |
 | **在线更新** | ✅ 智能更新+强制更新 | ✅ 智能更新+强制更新 |
 | **服务控制** | ✅ 完整控制 | ✅ 完整控制 |
 | **日志管理** | ✅ 完整功能 | ❌ 基础功能 |
@@ -193,12 +217,28 @@ echo "/root/brec/file /home/用户名/ftp none bind,ro 0 0" >> /etc/fstab
 - ✅ 开机自启管理
 - ✅ 连接数监控
 
+### 🎯 **家目录映射优势**
+
+**完美的用户体验**：
+- ✅ 登录后立即看到录播文件
+- ✅ 无需进入任何子目录  
+- ✅ FTP根目录显示源目录内容
+- ✅ 路径简洁，操作直观
+
+**技术优势**：
+- ✅ 使用标准的bind mount，稳定可靠
+- ✅ 用户隔离，每个用户有独立的ftp目录
+- ✅ 支持不同用户映射不同源目录
+- ✅ 权限管理清晰，安全性高
+
 ### 💡 **最佳实践**
 - 录播期间无需任何特殊操作
-- 录制文件会自动出现在FTP目录
+- 录制文件立即在FTP根目录显示
+- 用户登录后可以完整管理录播文件
+- 可以直接通过FTP删除、重命名、整理文件
 - 可随时启动/停止服务而不影响录播
 - 建议定期检查更新获得最新修复
-- 建议定期清理旧录播文件
+- 可通过FTP直接清理旧录播文件
 - 可配合自动化脚本管理
 
 ## 📞 **技术支持**
