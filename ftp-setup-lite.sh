@@ -8,7 +8,7 @@
 set -o pipefail
 
 # 脚本信息
-SCRIPT_VERSION="v1.0.0-lite"
+SCRIPT_VERSION="v1.1.0-lite"
 SCRIPT_NAME="BRCE FTP Lite"
 
 # 颜色定义
@@ -1187,7 +1187,7 @@ perform_force_update() {
 # 执行更新操作
 execute_update() {
     local temp_script="$1"
-
+    local backup_script="$2"  # 向后兼容，但不使用
     local current_script="$(readlink -f "$0")"
     
     echo ""
