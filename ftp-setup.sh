@@ -924,8 +924,9 @@ install_brce_ftp() {
     auto_pwd=${auto_pwd:-y}
     
     if [[ "$auto_pwd" == "y" ]]; then
-        ftp_pass=$(openssl rand -base64 12)
+        ftp_pass=$(openssl rand -base64 12 | tr -d "=+/" | cut -c1-12)
         log_info "已自动生成安全密码"
+        log_debug "密码长度: ${#ftp_pass}"
     else
         local max_password_attempts=3
         local attempt=1
@@ -995,7 +996,13 @@ install_brce_ftp() {
     log_step_end "软件包安装"
     
     # 检查实时同步依赖
-    check_sync_dependencies
+    if ! check_sync_dependencies; then
+        log_warn "实时同步依赖检查失败，但安装将继续"
+        echo "⚠️  实时同步依赖安装失败，您可以稍后手动安装："
+        echo "   sudo apt-get install -y rsync inotify-tools  # Ubuntu/Debian"
+        echo "   sudo yum install -y rsync inotify-tools      # CentOS/RHEL"
+        echo "   sudo dnf install -y rsync inotify-tools      # Fedora"
+    fi
     
         # 创建用户（基于主程序逻辑）
     log_step_start "用户配置"
@@ -1015,7 +1022,7 @@ install_brce_ftp() {
     
     # 安全设置用户密码（避免密码在进程列表中暴露）
     log_info "设置用户密码 (密码已隐藏)"
-    # 保存密码用于显示
+    # 保存密码用于显示（在清除前保存）
     display_password="$ftp_pass"
     if echo "$FTP_USER:$ftp_pass" | chpasswd; then
         log_info "用户密码设置成功"
@@ -1098,7 +1105,14 @@ install_brce_ftp() {
     
     # 启动实时同步服务
     log_step_start "实时同步服务启动"
-    start_sync_service
+    if start_sync_service; then
+        log_info "实时同步服务启动成功"
+    else
+        log_warn "实时同步服务启动失败，但安装将继续"
+        echo "⚠️  实时同步服务启动失败，您可以稍后手动启动："
+        echo "   sudo systemctl start brce-ftp-sync"
+        echo "   sudo systemctl enable brce-ftp-sync"
+    fi
     log_step_end "实时同步服务启动"
     
     # 配置防火墙（基于主程序逻辑）
@@ -1150,7 +1164,7 @@ install_brce_ftp() {
     echo "   服务IP: $external_ip"
     echo "   端口: 21"
     echo "   用户: $FTP_USER"
-    echo "   密码: $display_password"
+    echo "   密码: ${display_password:-[密码显示错误,请查看日志]}"
     echo "   访问目录: $SOURCE_DIR"
     echo ""
     
@@ -1180,6 +1194,12 @@ install_brce_ftp() {
     log_info "✅ FTP服务安装部署成功完成"
     log_info "所有步骤已执行完毕，服务正常运行"
     log_step_end "FTP服务安装部署总结"
+    
+    echo ""
+    echo "🎉 安装完成！"
+    echo "📝 重要提醒：请记录上面显示的密码信息"
+    echo ""
+    read -p "按回车键返回主菜单..." -r
 }
 
 # 列出所有FTP用户
