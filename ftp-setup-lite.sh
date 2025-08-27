@@ -1280,12 +1280,33 @@ delete_user() {
     
     read -p "确认删除用户 $target_user？(y/N): " confirm
     if [[ "$confirm" =~ ^[Yy]$ ]]; then
-        # 删除用户（不删除家目录，因为是共享的录制目录）
-        userdel "$target_user" 2>/dev/null || true
-        
         echo ""
-        echo "✅ 用户删除成功: $target_user"
-        echo "💡 录制目录 $recording_dir 已保留"
+        echo "🗑️ 正在删除用户: $target_user"
+        
+        # 先从ftp-users组中移除用户
+        echo "   📝 从用户组中移除..."
+        if getent group ftp-users | grep -q "$target_user"; then
+            gpasswd -d "$target_user" ftp-users 2>/dev/null || true
+            echo "   ✅ 已从ftp-users组中移除"
+        fi
+        
+        # 删除用户（不删除家目录，因为是共享的录制目录）
+        echo "   🗑️ 删除系统用户..."
+        if userdel "$target_user" 2>/dev/null; then
+            echo "   ✅ 系统用户删除成功"
+        else
+            echo "   ⚠️ 系统用户删除可能失败（用户可能已删除）"
+        fi
+        
+        # 验证删除结果
+        if ! id "$target_user" &>/dev/null; then
+            echo ""
+            echo "✅ 用户删除成功: $target_user"
+            echo "💡 录制目录 $recording_dir 已保留"
+        else
+            echo ""
+            echo "⚠️ 用户删除可能不完整，请检查系统日志"
+        fi
     else
         log_info "取消删除操作"
     fi
@@ -1872,6 +1893,8 @@ uninstall_service() {
         if [[ -n "$ftp_users" ]]; then
             for username in $(echo "$ftp_users" | tr ',' ' '); do
                 if id "$username" &>/dev/null; then
+                    # 先从组中移除，再删除用户
+                    gpasswd -d "$username" ftp-users 2>/dev/null || true
                     # 删除用户（不删除录制目录）
                     userdel "$username" 2>/dev/null || true
                     log_info "已删除用户: $username"
