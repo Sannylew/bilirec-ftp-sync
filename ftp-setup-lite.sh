@@ -1073,34 +1073,127 @@ manage_users() {
     done
 }
 
-# 列出用户
+# 列出用户 - 专业版
 list_users() {
     echo ""
-    echo "📋 当前FTP用户："
-    local count=0
-    local recording_dir="/opt/brec/file"
+    echo "📋 FTP用户详细状态"
+    echo ""
     
-    # 显示FTP用户（通过ftp-users组）
-    if getent group ftp-users >/dev/null 2>&1; then
-        local ftp_users=$(getent group ftp-users | cut -d: -f4)
-        if [[ -n "$ftp_users" ]]; then
-            for username in $(echo "$ftp_users" | tr ',' ' '); do
-                if id "$username" &>/dev/null; then
-                    ((count++))
-                    echo "$count. 👤 $username"
-                    echo "   📁 家目录: $recording_dir"
-                    echo "   📁 录制目录: $recording_dir (直接访问)"
-                fi
-            done
-        fi
+    # 检查ftp-users组
+    if ! getent group ftp-users >/dev/null 2>&1; then
+        echo "❌ ftp-users 用户组不存在"
+        echo "💡 建议: 先安装FTP服务"
+        echo ""
+        read -p "按回车键返回..." -r
+        return 1
     fi
     
-    if [[ $count -eq 0 ]]; then
-        echo "   (无FTP用户)"
+    # 获取组信息
+    local group_info=$(getent group ftp-users)
+    local group_id=$(echo "$group_info" | cut -d: -f3)
+    local ftp_users=$(echo "$group_info" | cut -d: -f4)
+    
+    echo "📊 用户组信息:"
+    echo "   组名: ftp-users"
+    echo "   组ID: $group_id"
+    echo "   原始数据: $group_info"
+    echo ""
+    
+    # 分析用户状态
+    local valid_count=0
+    local ghost_count=0
+    local recording_dir="/opt/brec/file"
+    
+    if [[ -n "$ftp_users" ]]; then
+        echo "🔍 用户状态分析:"
+        echo ""
+        
+        for username in $(echo "$ftp_users" | tr ',' ' '); do
+            if [[ -n "$username" ]]; then
+                echo "👤 用户: $username"
+                
+                # 检查系统用户是否存在
+                if id "$username" &>/dev/null 2>&1; then
+                    ((valid_count++))
+                    echo "   ✅ 系统状态: 存在"
+                    
+                    # 获取用户详细信息
+                    local user_info=$(getent passwd "$username")
+                    local user_id=$(echo "$user_info" | cut -d: -f3)
+                    local user_gid=$(echo "$user_info" | cut -d: -f4)
+                    local user_home=$(echo "$user_info" | cut -d: -f6)
+                    local user_shell=$(echo "$user_info" | cut -d: -f7)
+                    
+                    echo "   📊 用户ID: $user_id"
+                    echo "   📊 主组ID: $user_gid"
+                    echo "   🏠 家目录: $user_home"
+                    echo "   🐚 登录Shell: $user_shell"
+                    
+                    # 检查家目录
+                    if [[ -d "$user_home" ]]; then
+                        echo "   📁 家目录状态: 存在"
+                        local home_size=$(du -sh "$user_home" 2>/dev/null | cut -f1 || echo "未知")
+                        echo "   📏 家目录大小: $home_size"
+                    else
+                        echo "   ❌ 家目录状态: 不存在"
+                    fi
+                    
+                    # 检查录制目录访问
+                    if [[ -d "$recording_dir" ]]; then
+                        if [[ -r "$recording_dir" && -w "$recording_dir" ]]; then
+                            echo "   ✅ 录制目录权限: 可读写"
+                        else
+                            echo "   ⚠️ 录制目录权限: 权限不足"
+                        fi
+                    else
+                        echo "   ❌ 录制目录: 不存在"
+                    fi
+                    
+                    # 检查进程
+                    local process_count=$(ps -u "$username" 2>/dev/null | wc -l)
+                    if [[ $process_count -gt 1 ]]; then
+                        echo "   🔄 活跃进程: $((process_count-1)) 个"
+                    else
+                        echo "   💤 活跃进程: 无"
+                    fi
+                    
+                else
+                    ((ghost_count++))
+                    echo "   ❌ 系统状态: 不存在（僵尸用户）"
+                    echo "   💡 建议: 需要清理"
+                fi
+                echo ""
+            fi
+        done
+    else
+        echo "📋 组中无用户"
+    fi
+    
+    # 统计信息
+    echo "📊 统计总结:"
+    echo "   ✅ 有效用户: $valid_count 个"
+    echo "   ❌ 僵尸用户: $ghost_count 个"
+    echo "   📁 录制目录: $recording_dir"
+    
+    # 检查录制目录状态
+    if [[ -d "$recording_dir" ]]; then
+        local dir_owner=$(stat -c "%U:%G" "$recording_dir" 2>/dev/null || echo "未知")
+        local dir_perms=$(stat -c "%a" "$recording_dir" 2>/dev/null || echo "未知")
+        local dir_size=$(du -sh "$recording_dir" 2>/dev/null | cut -f1 || echo "未知")
+        echo "   📁 目录所有者: $dir_owner"
+        echo "   📁 目录权限: $dir_perms"
+        echo "   📁 目录大小: $dir_size"
+    else
+        echo "   ❌ 录制目录不存在"
+    fi
+    
+    if [[ $ghost_count -gt 0 ]]; then
+        echo ""
+        echo "⚠️ 发现僵尸用户，建议使用删除用户功能进行清理"
     fi
     
     echo ""
-    read -p "按回车键返回用户管理..." -r
+    read -p "按回车键返回..." -r
 }
 
 # 添加用户
@@ -1231,41 +1324,129 @@ change_password() {
     read -p "按回车键返回用户管理..." -r
 }
 
-# 删除用户
+# 删除用户 - 专业版
 delete_user() {
     echo ""
-    echo "🗑️ 删除用户"
+    echo "🗑️ 删除用户 (调试模式)"
     echo ""
     
-    # 列出用户
-    local users=()
-    if getent group ftp-users >/dev/null 2>&1; then
-        local ftp_users=$(getent group ftp-users | cut -d: -f4)
-        if [[ -n "$ftp_users" ]]; then
-            for username in $(echo "$ftp_users" | tr ',' ' '); do
-                if id "$username" &>/dev/null; then
-                    users+=("$username")
-                fi
-            done
-        fi
-    fi
+    # 第一步：详细诊断当前用户状态
+    echo "🔍 诊断当前用户状态..."
     
-    if [[ ${#users[@]} -eq 0 ]]; then
-        log_error "没有FTP用户可删除"
+    # 检查ftp-users组是否存在
+    if ! getent group ftp-users >/dev/null 2>&1; then
+        log_error "ftp-users 用户组不存在，没有FTP用户可删除"
         read -p "按回车键返回..." -r
         return 1
     fi
     
-    echo "📋 当前用户："
-    for i in "${!users[@]}"; do
-        echo "$((i+1)). ${users[$i]}"
+    # 获取组中的用户列表
+    local group_info=$(getent group ftp-users)
+    local ftp_users=$(echo "$group_info" | cut -d: -f4)
+    echo "📊 ftp-users组信息: $group_info"
+    echo "📋 组中用户列表: '$ftp_users'"
+    
+    # 分析用户状态
+    local valid_users=()
+    local ghost_users=()
+    
+    if [[ -n "$ftp_users" ]]; then
+        echo ""
+        echo "🔍 分析每个用户状态:"
+        for username in $(echo "$ftp_users" | tr ',' ' '); do
+            if [[ -n "$username" ]]; then
+                echo "   检查用户: $username"
+                if id "$username" &>/dev/null; then
+                    valid_users+=("$username")
+                    echo "     ✅ 系统用户存在"
+                else
+                    ghost_users+=("$username")
+                    echo "     ❌ 系统用户不存在（僵尸用户）"
+                fi
+            fi
+        done
+    fi
+    
+    echo ""
+    echo "📊 用户状态统计:"
+    echo "   有效用户数: ${#valid_users[@]}"
+    echo "   僵尸用户数: ${#ghost_users[@]}"
+    
+    # 如果有僵尸用户，提供清理选项
+    if [[ ${#ghost_users[@]} -gt 0 ]]; then
+        echo ""
+        echo "⚠️ 发现僵尸用户（在组中但系统不存在）:"
+        for ghost in "${ghost_users[@]}"; do
+            echo "     👻 $ghost"
+        done
+        echo ""
+        read -p "是否先清理僵尸用户？(Y/n): " clean_ghost
+        clean_ghost=${clean_ghost:-Y}
+        
+        if [[ "$clean_ghost" =~ ^[Yy]$ ]]; then
+            echo "🧹 清理僵尸用户..."
+            for ghost in "${ghost_users[@]}"; do
+                echo "   清理: $ghost"
+                if gpasswd -d "$ghost" ftp-users 2>/dev/null; then
+                    echo "     ✅ 已从组中移除"
+                else
+                    echo "     ❌ 从组中移除失败"
+                    # 尝试手动编辑组文件
+                    echo "     🔧 尝试手动修复..."
+                    sed -i "s/,$ghost//g; s/$ghost,//g; s/:$ghost:/::/g" /etc/group 2>/dev/null || true
+                    if ! getent group ftp-users | grep -q "$ghost"; then
+                        echo "     ✅ 手动修复成功"
+                    else
+                        echo "     ❌ 手动修复失败"
+                    fi
+                fi
+            done
+            
+            # 重新获取清理后的用户列表
+            group_info=$(getent group ftp-users)
+            ftp_users=$(echo "$group_info" | cut -d: -f4)
+            valid_users=()
+            if [[ -n "$ftp_users" ]]; then
+                for username in $(echo "$ftp_users" | tr ',' ' '); do
+                    if [[ -n "$username" ]] && id "$username" &>/dev/null; then
+                        valid_users+=("$username")
+                    fi
+                done
+            fi
+            echo "✅ 僵尸用户清理完成"
+        fi
+    fi
+    
+    # 检查是否还有可删除的用户
+    if [[ ${#valid_users[@]} -eq 0 ]]; then
+        echo ""
+        log_error "没有有效的FTP用户可删除"
+        read -p "按回车键返回..." -r
+        return 1
+    fi
+    
+    echo ""
+    echo "📋 可删除的用户："
+    for i in "${!valid_users[@]}"; do
+        echo "$((i+1)). 👤 ${valid_users[$i]}"
+        echo "     🏠 家目录: $(getent passwd "${valid_users[$i]}" | cut -d: -f6)"
+        echo "     🐚 Shell: $(getent passwd "${valid_users[$i]}" | cut -d: -f7)"
     done
     echo ""
     
     read -p "请输入要删除的用户名: " target_user
     
-    if ! id "$target_user" &>/dev/null; then
-        log_error "用户不存在: $target_user"
+    # 验证输入的用户
+    local user_found=false
+    for user in "${valid_users[@]}"; do
+        if [[ "$user" == "$target_user" ]]; then
+            user_found=true
+            break
+        fi
+    done
+    
+    if [[ "$user_found" == false ]]; then
+        log_error "用户 '$target_user' 不在可删除列表中"
         read -p "按回车键返回..." -r
         return 1
     fi
@@ -1274,45 +1455,108 @@ delete_user() {
     
     echo ""
     echo "⚠️ 即将删除用户: $target_user"
-    echo "   📁 家目录: $recording_dir"
-    echo "   💡 注意: 录制目录本身不会被删除"
+    echo "   📁 当前家目录: $(getent passwd "$target_user" | cut -d: -f6)"
+    echo "   🎯 录制目录: $recording_dir"
+    echo "   💡 注意: 录制目录和文件将完全保留"
     echo ""
     
     read -p "确认删除用户 $target_user？(y/N): " confirm
     if [[ "$confirm" =~ ^[Yy]$ ]]; then
         echo ""
-        echo "🗑️ 正在删除用户: $target_user"
+        echo "🗑️ 开始删除用户: $target_user"
         
-        # 先从ftp-users组中移除用户
-        echo "   📝 从用户组中移除..."
-        if getent group ftp-users | grep -q "$target_user"; then
-            gpasswd -d "$target_user" ftp-users 2>/dev/null || true
-            echo "   ✅ 已从ftp-users组中移除"
+        local delete_success=true
+        
+        # 第一步：从ftp-users组中移除
+        echo "   📝 步骤1: 从ftp-users组中移除用户..."
+        if getent group ftp-users | grep -q "\b$target_user\b"; then
+            echo "     🔍 用户确实在组中"
+            if gpasswd -d "$target_user" ftp-users 2>/dev/null; then
+                echo "     ✅ gpasswd 命令执行成功"
+            else
+                echo "     ❌ gpasswd 命令失败，尝试手动编辑"
+                # 备份组文件
+                cp /etc/group /etc/group.backup.$(date +%s) 2>/dev/null || true
+                # 手动移除用户
+                sed -i "s/,$target_user//g; s/$target_user,//g; s/:$target_user:/::/g" /etc/group 2>/dev/null || true
+                delete_success=false
+            fi
+            
+            # 验证是否从组中移除成功
+            if getent group ftp-users | grep -q "\b$target_user\b"; then
+                echo "     ❌ 用户仍在组中，移除失败"
+                delete_success=false
+            else
+                echo "     ✅ 用户已从组中移除"
+            fi
+        else
+            echo "     ℹ️ 用户不在ftp-users组中"
         fi
         
-        # 删除用户（不删除家目录，因为是共享的录制目录）
-        echo "   🗑️ 删除系统用户..."
-        if userdel "$target_user" 2>/dev/null; then
-            echo "   ✅ 系统用户删除成功"
+        # 第二步：删除系统用户
+        echo "   🗑️ 步骤2: 删除系统用户..."
+        if id "$target_user" &>/dev/null; then
+            echo "     🔍 用户存在于系统中"
+            # 先杀死用户进程
+            pkill -u "$target_user" 2>/dev/null || true
+            sleep 1
+            
+            # 删除用户（不删除家目录）
+            if userdel "$target_user" 2>/dev/null; then
+                echo "     ✅ userdel 命令执行成功"
+            else
+                echo "     ❌ userdel 命令失败"
+                delete_success=false
+                
+                # 尝试强制删除
+                echo "     🔧 尝试强制删除..."
+                if userdel -f "$target_user" 2>/dev/null; then
+                    echo "     ✅ 强制删除成功"
+                else
+                    echo "     ❌ 强制删除也失败"
+                fi
+            fi
         else
-            echo "   ⚠️ 系统用户删除可能失败（用户可能已删除）"
+            echo "     ℹ️ 用户不存在于系统中"
         fi
         
-        # 验证删除结果
-        if ! id "$target_user" &>/dev/null; then
-            echo ""
-            echo "✅ 用户删除成功: $target_user"
-            echo "💡 录制目录 $recording_dir 已保留"
+        # 第三步：最终验证
+        echo "   🔍 步骤3: 验证删除结果..."
+        local final_check=true
+        
+        # 检查系统用户
+        if id "$target_user" &>/dev/null; then
+            echo "     ❌ 系统用户仍然存在"
+            final_check=false
         else
-            echo ""
-            echo "⚠️ 用户删除可能不完整，请检查系统日志"
+            echo "     ✅ 系统用户已删除"
+        fi
+        
+        # 检查组成员
+        if getent group ftp-users | grep -q "\b$target_user\b"; then
+            echo "     ❌ 用户仍在ftp-users组中"
+            final_check=false
+        else
+            echo "     ✅ 用户已从ftp-users组中移除"
+        fi
+        
+        echo ""
+        if [[ "$final_check" == true ]]; then
+            echo "🎉 用户删除完全成功: $target_user"
+            echo "💾 录制目录 $recording_dir 及所有文件已保留"
+        else
+            echo "⚠️ 用户删除不完整!"
+            echo "🔧 建议操作:"
+            echo "   1. 重启服务器后重试"
+            echo "   2. 手动检查 /etc/passwd 和 /etc/group"
+            echo "   3. 联系系统管理员"
         fi
     else
         log_info "取消删除操作"
     fi
     
     echo ""
-    read -p "按回车键返回用户管理..." -r
+    read -p "按回车键返回..." -r
 }
 
 # 启动FTP服务
