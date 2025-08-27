@@ -494,10 +494,11 @@ manage_logs() {
             ;;
         4)
             echo ""
-            echo "⚠️ 确认清理日志文件？"
+            echo "🧹 清理日志文件"
             echo "📁 文件: $LOG_FILE"
-            read -p "输入 'YES' 确认清理: " confirm_clean
-            if [[ "$confirm_clean" == "YES" ]]; then
+            read -p "确认清理？(Y/n): " confirm_clean
+            confirm_clean=${confirm_clean:-Y}
+            if [[ "$confirm_clean" =~ ^[Yy]$ ]]; then
                 if > "$LOG_FILE" 2>/dev/null; then
                     echo "✅ 日志文件已清理"
                     log_info "日志文件已被用户手动清理"
@@ -2480,8 +2481,8 @@ uninstall_service() {
         2)
             echo ""
             echo "⚠️ 确认删除脚本文件？此操作不可恢复"
-            read -p "输入 'DELETE' 确认删除脚本: " confirm_delete
-            if [[ "$confirm_delete" == "DELETE" ]]; then
+            read -p "确认删除脚本？(y/N): " confirm_delete
+            if [[ "$confirm_delete" =~ ^[Yy]$ ]]; then
                 local script_path="$(readlink -f "$0")"
                 echo ""
                 echo "🗑️ 删除脚本文件: $script_path"
@@ -2654,10 +2655,11 @@ main_menu() {
                 ;;
             11) 
                 echo ""
-                echo "⚠️ 确认清理日志文件？"
+                echo "🧹 清理日志文件"
                 echo "📁 文件: $LOG_FILE"
-                read -p "输入 'YES' 确认清理: " confirm_clean
-                if [[ "$confirm_clean" == "YES" ]]; then
+                read -p "确认清理？(Y/n): " confirm_clean
+                confirm_clean=${confirm_clean:-Y}
+                if [[ "$confirm_clean" =~ ^[Yy]$ ]]; then
                     if > "$LOG_FILE" 2>/dev/null; then
                         echo "✅ 日志文件已清理"
                         log_info "日志文件已被用户手动清理"
