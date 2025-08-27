@@ -7,6 +7,11 @@
 
 set -o pipefail
 
+# 确保标准输入输出正常工作
+exec 1>&1
+exec 2>&2
+exec 0</dev/tty 2>/dev/null || true
+
 # 脚本信息
 SCRIPT_VERSION="v1.1.0-lite"
 SCRIPT_NAME="BRCE FTP Lite"
@@ -660,7 +665,18 @@ diagnose_vsftpd() {
 generate_password() {
     local length=${1:-12}
     # 使用字母和数字，避免特殊字符
-    tr -dc 'A-Za-z0-9' < /dev/urandom | head -c "$length"
+    # 修复：使用更安全的方法，避免影响标准输入流
+    local password=""
+    local chars="ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789"
+    local chars_len=${#chars}
+    
+    for ((i=0; i<length; i++)); do
+        # 使用 $RANDOM 而不是 /dev/urandom
+        local random_index=$((RANDOM % chars_len))
+        password="${password}${chars:$random_index:1}"
+    done
+    
+    echo "$password"
 }
 
 # 获取服务器IP
@@ -806,7 +822,14 @@ install_ftp_lite() {
         echo ""
         echo "💡 如需重新配置，请先选择 '14) 🗑️ 卸载服务'"
         echo ""
-        read -p "按回车键返回主菜单..." -r
+        
+        # 安全的 read 命令，带错误处理
+        if ! read -p "按回车键返回主菜单..." -r 2>/dev/null; then
+            log_warn "已安装检查后的 read 命令失败，强制延迟后返回"
+            sleep 2
+        fi
+        
+        log_info "用户确认已安装状态，返回主菜单"
         log_function_end "install_ftp_lite" "0"
         return 0
     fi
@@ -840,7 +863,10 @@ install_ftp_lite() {
     
     # 确认是否继续
     log_debug "等待用户确认安装"
-    read -p "🤔 是否继续安装？录播姬需要配置输出到此目录 (Y/n): " confirm
+    if ! read -p "🤔 是否继续安装？录播姬需要配置输出到此目录 (Y/n): " confirm 2>/dev/null; then
+        log_warn "用户确认输入失败，默认继续安装"
+        confirm="Y"
+    fi
     confirm=${confirm:-Y}
     log_debug "用户输入: $confirm"
     if [[ ! "$confirm" =~ ^[Yy]$ ]]; then
@@ -870,14 +896,20 @@ install_ftp_lite() {
     
     # 获取FTP用户名
     log_debug "获取FTP用户名"
-    read -p "👤 FTP用户名 (默认: sunny，直接回车使用默认): " ftp_user
+    if ! read -p "👤 FTP用户名 (默认: sunny，直接回车使用默认): " ftp_user 2>/dev/null; then
+        log_warn "FTP用户名输入失败，使用默认值"
+        ftp_user=""
+    fi
     ftp_user=${ftp_user:-sunny}
     echo "✅ 使用FTP用户名: $ftp_user"
     log_debug "FTP用户名: $ftp_user"
     
     # 生成密码
     log_debug "获取FTP密码配置"
-    read -p "🔐 自动生成密码？(Y/n，直接回车自动生成): " auto_pwd
+    if ! read -p "🔐 自动生成密码？(Y/n，直接回车自动生成): " auto_pwd 2>/dev/null; then
+        log_warn "密码生成选择输入失败，默认自动生成"
+        auto_pwd=""
+    fi
     auto_pwd=${auto_pwd:-Y}
     log_debug "密码生成选择: $auto_pwd"
     
@@ -889,17 +921,35 @@ install_ftp_lite() {
         log_debug "密码长度: ${#ftp_password}"
     else
         log_debug "手动输入密码"
+        local manual_attempts=0
         while true; do
-            read -s -p "请输入FTP密码: " ftp_password
+            ((manual_attempts++))
+            if [[ $manual_attempts -gt 3 ]]; then
+                log_warn "手动密码输入失败次数过多，自动生成密码"
+                ftp_password=$(generate_password 12)
+                echo "⚠️ 手动输入失败，已自动生成12位密码"
+                break
+            fi
+            
+            if ! read -s -p "请输入FTP密码: " ftp_password 2>/dev/null; then
+                log_warn "密码输入失败，重试 ($manual_attempts/3)"
+                echo ""
+                continue
+            fi
             echo ""
-            read -s -p "请确认FTP密码: " ftp_password2
+            
+            if ! read -s -p "请确认FTP密码: " ftp_password2 2>/dev/null; then
+                log_warn "密码确认输入失败，重试 ($manual_attempts/3)"
+                echo ""
+                continue
+            fi
             echo ""
             
             if [[ "$ftp_password" == "$ftp_password2" ]]; then
                 log_debug "密码确认成功"
                 break
             else
-                log_error "密码不匹配，请重新输入"
+                log_error "密码不匹配，请重新输入 ($manual_attempts/3)"
                 log_debug "密码不匹配，重新输入"
             fi
         done
@@ -916,7 +966,10 @@ install_ftp_lite() {
     echo ""
     
     log_debug "等待用户最终确认"
-    read -p "确认开始安装？(Y/n): " confirm
+    if ! read -p "确认开始安装？(Y/n): " confirm 2>/dev/null; then
+        log_warn "最终确认输入失败，默认确认安装"
+        confirm=""
+    fi
     confirm=${confirm:-Y}
     log_debug "最终确认: $confirm"
     
@@ -940,7 +993,10 @@ install_ftp_lite() {
     log_info "=== 开始安装流程 ==="
     log_info "用户: $ftp_user, 录制目录: $recording_dir"
     
-    read -p "按回车键开始安装..." -r
+    if ! read -p "按回车键开始安装..." -r 2>/dev/null; then
+        log_warn "开始安装确认输入失败，自动继续"
+        sleep 1
+    fi
     
     # 开始安装
     echo ""
@@ -2465,59 +2521,100 @@ EOF
 
 # 主菜单
 main_menu() {
+    local last_choice=""
+    local same_choice_count=0
+    
     while true; do
         clear
         echo "======================================================"
         echo "🚀 $SCRIPT_NAME 管理控制台 $SCRIPT_VERSION"
         echo "======================================================"
         echo ""
-        echo "💡 轻量版特性: 直接目录访问 + 零资源消耗 + 完全兼容录播姬"
-        echo "📁 录制目录: /opt/brec/file (录播姬和FTP共用)"
+        echo "💡 轻量版: 直接目录访问 + 零配置 + 完全兼容录播姬"
+        echo "📁 录制目录: /opt/brec/file"
         echo ""
-            echo "请选择操作："
-    echo ""
-    echo "📦 安装与配置："
-    echo "1) 🚀 安装FTP服务"
-    echo ""
-    echo "🔧 服务管理："
-    echo "2) 📊 查看服务状态"
-    echo "3) ▶️ 启动FTP服务"
-    echo "4) ⏹️ 停止FTP服务"
-    echo "5) 🔄 重启FTP服务"
-    echo ""
-    echo "👥 用户管理："
-    echo "6) 📋 列出所有用户"
-    echo "7) ➕ 添加新用户"
-    echo "8) 🔐 修改用户密码"
-    echo "9) 🗑️ 删除用户"
-    echo ""
-    echo "🛠️ 系统功能："
-    echo "10) 📝 查看日志"
-    echo "11) 🧹 清理日志"
-    echo "12) 🔍 诊断启动问题"
-    echo "13) 🔄 在线更新"
-    echo "14) 🗑️ 卸载服务"
-    echo ""
-    echo "0) 🚪 退出"
+        echo "请选择操作："
+        echo ""
+        echo "📦 安装与配置："
+        echo "1) 🚀 安装FTP服务"
+        echo ""
+        echo "🔧 服务管理："
+        echo "2) 📊 查看服务状态"
+        echo "3) ▶️ 启动FTP服务"
+        echo "4) ⏹️ 停止FTP服务"
+        echo "5) 🔄 重启FTP服务"
+        echo ""
+        echo "👥 用户管理："
+        echo "6) 📋 列出所有用户"
+        echo "7) ➕ 添加用户"
+        echo "8) 🔐 修改用户密码"
+        echo "9) 🗑️ 删除用户"
+        echo ""
+        echo "🛠️ 系统功能："
+        echo "10) 📝 查看日志"
+        echo "11) 🧹 清理日志"
+        echo "12) 🔄 在线更新"
+        echo "13) 🗑️ 卸载服务"
+        echo ""
+        echo "0) 🚪 退出"
         echo ""
         echo "📝 快捷键： Ctrl+C 快速退出"
         echo ""
-            echo "💡 使用提示："
-    echo "   • 首次使用: 选择 1) 安装FTP服务"
-    echo "   • 录播姬输出目录: /opt/brec/file"
-    echo "   • 所有选项都有默认值，直接回车即可"
-        echo ""
-        read -p "请输入选项 (0-14): " choice
+        # 添加错误处理的 read 命令
+        if ! read -p "请输入选项 (0-13): " choice 2>/dev/null; then
+            echo ""
+            echo "⚠️ 输入读取错误，尝试修复..."
+            log_warn "主菜单 read 命令失败，尝试修复标准输入"
+            sleep 2
+            # 重置标准输入
+            exec 0</dev/tty
+            choice=""
+        fi
+        
+        # 处理空输入或错误输入
+        if [[ -z "$choice" ]]; then
+            echo ""
+            echo "ℹ️ 未输入选项，请重新选择"
+            sleep 1
+            continue
+        fi
+        
+        # 记录用户选择用于调试
+        log_debug "用户选择菜单选项: '$choice'"
+        
+        # 检查是否重复相同选择
+        if [[ "$choice" == "$last_choice" ]]; then
+            ((same_choice_count++))
+            if [[ $same_choice_count -ge 3 ]]; then
+                echo ""
+                echo "⚠️ 检测到快速重复选择，强制暂停..."
+                log_warn "检测到快速重复选择选项 '$choice'，计数: $same_choice_count"
+                sleep 3
+                same_choice_count=0
+            fi
+        else
+            same_choice_count=0
+        fi
+        last_choice="$choice"
         
         case $choice in
-            1) install_ftp_lite ;;
+            1) 
+                install_ftp_lite
+                sleep 1
+                ;;
             2) 
                 show_status
                 echo ""
                 read -p "按回车键返回主菜单..." -r
                 ;;
-            3) start_ftp_service ;;
-            4) stop_ftp_service ;;
+            3) 
+                start_ftp_service
+                sleep 1
+                ;;
+            4) 
+                stop_ftp_service
+                sleep 1
+                ;;
             5) 
                 echo ""
                 echo "🔄 重启vsftpd服务..."
@@ -2530,10 +2627,22 @@ main_menu() {
                 echo ""
                 read -p "按回车键返回主菜单..." -r
                 ;;
-            6) list_users ;;
-            7) add_user ;;
-            8) change_password ;;
-            9) delete_user ;;
+            6) 
+                list_users
+                sleep 1
+                ;;
+            7) 
+                add_user
+                sleep 1
+                ;;
+            8) 
+                change_password
+                sleep 1
+                ;;
+            9) 
+                delete_user
+                sleep 1
+                ;;
             10) 
                 echo ""
                 echo "📖 查看最新20行日志："
@@ -2561,9 +2670,14 @@ main_menu() {
                 echo ""
                 read -p "按回车键返回主菜单..." -r
                 ;;
-            12) diagnose_vsftpd ;;
-            13) update_script ;;
-            14) uninstall_service ;;
+            12) 
+                update_script
+                sleep 1
+                ;;
+            13) 
+                uninstall_service
+                sleep 1
+                ;;
             0) 
                 echo ""
                 echo "👋 感谢使用 $SCRIPT_NAME！"
@@ -2571,7 +2685,7 @@ main_menu() {
                 ;;
             *) 
                 echo ""
-                echo "❌ 无效选项！请输入 0-14 之间的数字"
+                echo "❌ 无效选项！请输入 0-13 之间的数字"
                 echo "ℹ️  提示：输入数字后按回车键确认"
                 sleep 2
                 ;;
