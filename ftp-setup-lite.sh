@@ -1499,19 +1499,66 @@ add_user() {
     confirm=${confirm:-Y}
     
     if [[ "$confirm" =~ ^[Yy]$ ]]; then
+        echo ""
+        echo "👤 开始添加用户..."
+        echo ""
+        
+        # 调用create_ftp_user函数
+        echo "📝 步骤1/3: 创建系统用户..."
         if create_ftp_user "$new_username" "$new_password" "$recording_dir"; then
-            echo ""
-            echo "✅ 用户添加成功！"
+            echo "   ✅ 系统用户创建成功"
             echo "   👤 用户名: $new_username"
-            echo "   🔐 密码: $new_password"
-            echo "   📁 用户家目录: $recording_dir"
-            echo "   📁 录制目录: $recording_dir (与家目录相同)"
-            echo "   📁 用户权限: 可以读取、写入、删除文件"
+            echo "   🏠 家目录: $recording_dir"
         else
-            log_error "用户添加失败"
+            echo "   ❌ 系统用户创建失败"
+            echo ""
+            read -p "按回车键返回..." -r
+            return 1
         fi
+        
+        echo ""
+        echo "🔧 步骤2/3: 配置FTP权限..."
+        if getent group ftp-users | grep -q "$new_username"; then
+            echo "   ✅ 用户已添加到ftp-users组"
+        else
+            echo "   ⚠️ 用户未在ftp-users组中"
+        fi
+        
+        echo "   ✅ 录制目录权限配置完成"
+        echo ""
+        
+        echo "✅ 步骤3/3: 验证配置..."
+        if id "$new_username" &>/dev/null; then
+            echo "   ✅ 用户账户验证成功"
+        else
+            echo "   ❌ 用户账户验证失败"
+        fi
+        
+        if [[ -d "$recording_dir" ]]; then
+            echo "   ✅ 录制目录访问正常"
+        else
+            echo "   ❌ 录制目录访问异常"
+        fi
+        
+        echo ""
+        echo "🎉 用户添加完成！"
+        echo ""
+        echo "📋 用户信息："
+        echo "   👤 用户名: $new_username"
+        echo "   🔐 密码: $new_password"
+        echo "   📁 FTP登录目录: $recording_dir"
+        echo "   📁 权限: 读取、写入、删除文件"
+        echo "   🔗 连接方式: 直接访问录制目录"
+        echo ""
+        echo "💡 连接测试："
+        echo "   • 服务器地址: $(hostname -I | awk '{print $1}' 2>/dev/null || echo '本机IP')"
+        echo "   • 端口: 21"
+        echo "   • 用户名: $new_username"
+        echo "   • 密码: $new_password"
     else
-        log_info "取消添加用户"
+        echo ""
+        echo "✅ 用户选择：取消添加"
+        echo "❌ 用户添加已取消"
     fi
     
     echo ""
@@ -1598,13 +1645,45 @@ change_password() {
     confirm=${confirm:-Y}
     
     if [[ "$confirm" =~ ^[Yy]$ ]]; then
-        echo "$target_user:$new_password" | chpasswd
         echo ""
-        echo "✅ 密码修改成功！"
-        echo "   👤 用户: $target_user"
+        echo "🔐 开始修改密码..."
+        echo ""
+        
+        echo "📝 步骤1/2: 更新系统密码..."
+        if echo "$target_user:$new_password" | chpasswd 2>/dev/null; then
+            echo "   ✅ 系统密码更新成功"
+        else
+            echo "   ❌ 系统密码更新失败"
+            echo ""
+            read -p "按回车键返回..." -r
+            return 1
+        fi
+        
+        echo ""
+        echo "✅ 步骤2/2: 验证密码更新..."
+        if id "$target_user" &>/dev/null; then
+            echo "   ✅ 用户账户验证成功"
+        else
+            echo "   ❌ 用户账户验证失败"
+        fi
+        
+        echo ""
+        echo "🎉 密码修改完成！"
+        echo ""
+        echo "📋 更新信息："
+        echo "   👤 用户名: $target_user"
         echo "   🔐 新密码: $new_password"
+        echo "   📁 FTP目录: /opt/brec/file"
+        echo ""
+        echo "💡 连接测试："
+        echo "   • 服务器地址: $(hostname -I | awk '{print $1}' 2>/dev/null || echo '本机IP')"
+        echo "   • 端口: 21"
+        echo "   • 用户名: $target_user"
+        echo "   • 新密码: $new_password"
     else
-        log_info "取消密码修改"
+        echo ""
+        echo "✅ 用户选择：取消修改"
+        echo "❌ 密码修改已取消"
     fi
     
     echo ""
@@ -2432,39 +2511,97 @@ uninstall_service() {
     
     echo ""
     echo "🗑️ 开始卸载..."
+    echo ""
     
     # 停止服务
-    log_info "停止vsftpd服务..."
-    systemctl stop vsftpd 2>/dev/null || true
-    systemctl disable vsftpd 2>/dev/null || true
+    echo "⏹️ 步骤1/4: 停止vsftpd服务..."
+    if systemctl is-active --quiet vsftpd; then
+        if systemctl stop vsftpd 2>/dev/null; then
+            echo "   ✅ vsftpd服务已停止"
+        else
+            echo "   ⚠️ vsftpd服务停止失败（可能未运行）"
+        fi
+    else
+        echo "   ℹ️ vsftpd服务未运行"
+    fi
+    
+    if systemctl is-enabled --quiet vsftpd 2>/dev/null; then
+        if systemctl disable vsftpd 2>/dev/null; then
+            echo "   ✅ 已禁用vsftpd开机自启动"
+        else
+            echo "   ⚠️ 禁用开机自启动失败"
+        fi
+    else
+        echo "   ℹ️ vsftpd开机自启动未启用"
+    fi
+    
+    echo ""
     
     # 删除FTP用户
-    log_info "删除FTP用户..."
+    echo "👥 步骤2/4: 删除FTP用户..."
+    local deleted_users=0
     if getent group ftp-users >/dev/null 2>&1; then
         local ftp_users=$(getent group ftp-users | cut -d: -f4)
         if [[ -n "$ftp_users" ]]; then
             for username in $(echo "$ftp_users" | tr ',' ' '); do
                 if id "$username" &>/dev/null; then
+                    echo "   🗑️ 删除用户: $username"
                     # 先从组中移除，再删除用户
-                    gpasswd -d "$username" ftp-users 2>/dev/null || true
+                    if gpasswd -d "$username" ftp-users 2>/dev/null; then
+                        echo "      ✅ 从ftp-users组移除成功"
+                    fi
                     # 删除用户（不删除录制目录）
-                    userdel "$username" 2>/dev/null || true
-                    log_info "已删除用户: $username"
+                    if userdel "$username" 2>/dev/null; then
+                        echo "      ✅ 用户删除成功"
+                        ((deleted_users++))
+                    else
+                        echo "      ⚠️ 用户删除失败（可能不存在）"
+                    fi
                 fi
             done
         fi
     fi
     
-    # 删除FTP用户组
-    log_info "删除用户组..."
-    groupdel ftp-users 2>/dev/null || true
-    
-    # 移除配置文件
-    log_info "移除配置文件..."
-    rm -f /etc/vsftpd.conf
+    if [[ $deleted_users -eq 0 ]]; then
+        echo "   ℹ️ 没有需要删除的FTP用户"
+    else
+        echo "   ✅ 已删除 $deleted_users 个FTP用户"
+    fi
     
     echo ""
-    echo "✅ 卸载完成！"
+    
+    # 删除FTP用户组
+    echo "👥 步骤3/4: 删除用户组..."
+    if getent group ftp-users >/dev/null 2>&1; then
+        if groupdel ftp-users 2>/dev/null; then
+            echo "   ✅ 已删除ftp-users用户组"
+        else
+            echo "   ⚠️ 用户组删除失败"
+        fi
+    else
+        echo "   ℹ️ ftp-users用户组不存在"
+    fi
+    
+    echo ""
+    
+    # 移除配置文件
+    echo "📄 步骤4/4: 清理配置文件..."
+    if [[ -f /etc/vsftpd.conf ]]; then
+        if rm -f /etc/vsftpd.conf; then
+            echo "   ✅ 已删除vsftpd配置文件"
+        else
+            echo "   ⚠️ 配置文件删除失败"
+        fi
+    else
+        echo "   ℹ️ vsftpd配置文件不存在"
+    fi
+    
+    echo ""
+    echo "🎉 卸载完成！已执行的操作："
+    echo "   ✅ 停止并禁用vsftpd服务"
+    echo "   ✅ 删除所有FTP用户和用户组"
+    echo "   ✅ 清理vsftpd配置文件"
+    echo "   💾 录制目录数据已安全保留"
     echo ""
     
     # 询问是否删除脚本本身
@@ -2485,33 +2622,54 @@ uninstall_service() {
             if [[ "$confirm_delete" =~ ^[Yy]$ ]]; then
                 local script_path="$(readlink -f "$0")"
                 echo ""
-                echo "🗑️ 删除脚本文件: $script_path"
+                echo "✅ 用户选择：删除脚本文件"
+                echo ""
+                echo "📋 完成总结："
+                echo "   ✅ FTP服务已完全卸载"
+                echo "   ✅ 用户数据已安全保留"
+                echo "   🗑️ 脚本文件将被删除: $script_path"
+                echo ""
+                echo "🎉 $SCRIPT_NAME 将完全清理！"
+                echo "💡 感谢使用！数据文件在 /opt/brec/file 中安全保留。"
                 
                 # 创建一个临时脚本来删除主脚本
                 cat > /tmp/cleanup_ftp_script.sh << 'EOF'
 #!/bin/bash
 sleep 1
-rm -f "$1"
-echo "✅ 脚本文件已删除"
-echo "🎉 $SCRIPT_NAME 已完全卸载"
+if rm -f "$1" 2>/dev/null; then
+    echo ""
+    echo "✅ 脚本文件已删除"
+    echo "🎉 BRCE FTP Lite 已完全卸载"
+    echo "💾 录制数据已安全保留在 /opt/brec/file"
+else
+    echo ""
+    echo "⚠️ 脚本文件删除失败"
+    echo "📁 文件位置: $1"
+fi
 EOF
                 chmod +x /tmp/cleanup_ftp_script.sh
-                
-                echo "🎉 $SCRIPT_NAME 完全卸载完成！"
-                echo "💡 感谢使用！"
                 
                 # 执行清理脚本并退出
                 exec /tmp/cleanup_ftp_script.sh "$script_path"
             else
-                echo "❌ 删除已取消，脚本文件保留"
+                echo ""
+                echo "✅ 用户选择：取消删除"
+                echo "❌ 脚本文件已保留"
             fi
             ;;
         1|*)
             echo ""
-            echo "💡 提示："
-            echo "   • 源目录数据已保留"
-            echo "   • 脚本文件已保留: $0"
-            echo "   • 如需重新安装，请重新运行此脚本"
+            echo "✅ 用户选择：保留脚本文件"
+            echo ""
+            echo "📋 完成总结："
+            echo "   ✅ FTP服务已完全卸载"
+            echo "   ✅ 用户数据已安全保留"
+            echo "   ✅ 脚本文件已保留: $0"
+            echo ""
+            echo "💡 后续操作："
+            echo "   🔄 重新安装：直接运行此脚本"
+            echo "   🗑️ 完全清理：重新选择卸载并删除脚本"
+            echo "   📁 数据位置：/opt/brec/file"
             ;;
     esac
     
@@ -2618,13 +2776,92 @@ main_menu() {
                 ;;
             5) 
                 echo ""
-                echo "🔄 重启vsftpd服务..."
-                systemctl restart vsftpd
-                if systemctl is-active --quiet vsftpd; then
-                    echo "✅ 服务重启成功"
-                else
-                    echo "❌ 服务重启失败"
+                echo "======================================================"
+                echo "🔄 重启FTP服务"
+                echo "======================================================"
+                echo ""
+                
+                # 检查服务是否存在
+                if ! systemctl list-unit-files vsftpd.service >/dev/null 2>&1; then
+                    echo "❌ vsftpd服务未安装"
+                    echo "💡 请先使用菜单选项1进行安装配置"
+                    echo ""
+                    read -p "按回车键返回主菜单..." -r
+                    break
                 fi
+                
+                echo "🔄 开始重启vsftpd服务..."
+                echo ""
+                
+                # 显示当前状态
+                echo "📝 步骤1/3: 检查当前状态..."
+                local was_running=false
+                if systemctl is-active --quiet vsftpd; then
+                    echo "   ℹ️ 服务当前正在运行"
+                    was_running=true
+                else
+                    echo "   ℹ️ 服务当前已停止"
+                fi
+                
+                echo ""
+                echo "⏹️ 步骤2/3: 停止服务..."
+                if systemctl stop vsftpd 2>/dev/null; then
+                    echo "   ✅ 服务停止成功"
+                else
+                    echo "   ⚠️ 服务停止失败（可能未运行）"
+                fi
+                
+                # 等待一秒确保完全停止
+                sleep 1
+                
+                echo ""
+                echo "🚀 步骤3/3: 启动服务..."
+                if systemctl start vsftpd 2>/dev/null; then
+                    echo "   ✅ 服务启动命令执行成功"
+                    
+                    # 等待服务完全启动
+                    sleep 2
+                    
+                    # 验证服务状态
+                    if systemctl is-active --quiet vsftpd; then
+                        echo "   ✅ 服务重启成功，当前状态：运行中"
+                        
+                        # 显示服务信息
+                        echo ""
+                        echo "🎉 重启完成！"
+                        echo ""
+                        echo "📊 服务状态："
+                        echo "   🟢 vsftpd状态: 运行中"
+                        echo "   🌐 FTP端口: 21"
+                        echo "   📡 被动端口: 40000-40100"
+                        
+                        # 显示IP地址
+                        local server_ip=$(hostname -I 2>/dev/null | awk '{print $1}' || echo '获取失败')
+                        if [[ "$server_ip" != "获取失败" ]]; then
+                            echo "   🔗 服务地址: ftp://$server_ip"
+                        fi
+                        
+                        # 显示用户数量
+                        if getent group ftp-users >/dev/null 2>&1; then
+                            local user_count=$(getent group ftp-users | cut -d: -f4 | tr ',' '\n' | grep -c . 2>/dev/null || echo "0")
+                            echo "   👥 FTP用户数: $user_count 个"
+                        fi
+                        
+                    else
+                        echo "   ❌ 服务重启失败，状态异常"
+                        echo ""
+                        echo "🔍 错误信息："
+                        journalctl -u vsftpd --no-pager -n 3 2>/dev/null || echo "无法获取日志"
+                    fi
+                else
+                    echo "   ❌ 服务启动失败"
+                    echo ""
+                    echo "🔍 可能原因："
+                    echo "   • 配置文件错误"
+                    echo "   • 端口被占用"
+                    echo "   • 权限问题"
+                fi
+                
                 echo ""
                 read -p "按回车键返回主菜单..." -r
                 ;;
