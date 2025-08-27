@@ -208,6 +208,7 @@ EOF
     fi
     
     log_info "vsftpd 配置文件已生成 - 简化配置，无chroot限制"
+    return 0
 }
 
 # 创建FTP用户 - 简化版
@@ -679,9 +680,142 @@ get_server_ip() {
     fi
 }
 
+# 安装前诊断
+diagnose_install_env() {
+    echo ""
+    echo "🔍 安装环境诊断..."
+    
+    local issues=0
+    
+    # 检查root权限
+    if [[ $EUID -ne 0 ]]; then
+        echo "❌ 需要root权限"
+        ((issues++))
+    else
+        echo "✅ root权限检查通过"
+    fi
+    
+    # 检查包管理器
+    local pkg_manager=$(detect_package_manager)
+    if [[ "$pkg_manager" == "unknown" ]]; then
+        echo "❌ 未检测到支持的包管理器"
+        ((issues++))
+    else
+        echo "✅ 包管理器: $pkg_manager"
+    fi
+    
+    # 检查网络
+    if ping -c 1 -W 5 8.8.8.8 >/dev/null 2>&1; then
+        echo "✅ 网络连接正常"
+    else
+        echo "⚠️ 网络连接异常，可能影响软件包下载"
+        ((issues++))
+    fi
+    
+    # 检查关键目录
+    if [[ -w /etc ]]; then
+        echo "✅ /etc 目录可写"
+    else
+        echo "❌ /etc 目录不可写"
+        ((issues++))
+    fi
+    
+    # 检查systemctl
+    if command -v systemctl >/dev/null 2>&1; then
+        echo "✅ systemctl 可用"
+    else
+        echo "❌ systemctl 不可用"
+        ((issues++))
+    fi
+    
+    # 检查日志目录
+    if [[ -w "$LOG_DIR" ]] || mkdir -p "$LOG_DIR" 2>/dev/null; then
+        echo "✅ 日志目录可用: $LOG_DIR"
+    else
+        echo "⚠️ 日志目录不可用，将使用临时目录"
+    fi
+    
+    if [[ $issues -gt 0 ]]; then
+        echo ""
+        echo "⚠️ 发现 $issues 个问题，可能影响安装"
+        read -p "是否仍要继续安装？(y/N): " force_install
+        if [[ ! "$force_install" =~ ^[Yy]$ ]]; then
+            echo "❌ 安装已取消"
+            return 1
+        fi
+    else
+        echo ""
+        echo "✅ 环境检查通过，可以开始安装"
+    fi
+    
+    return 0
+}
+
+# 检查是否已经安装
+check_installation_status() {
+    local has_vsftpd=false
+    local has_users=false
+    local has_config=false
+    local has_service=false
+    
+    # 检查vsftpd是否安装
+    if command -v vsftpd >/dev/null 2>&1; then
+        has_vsftpd=true
+    fi
+    
+    # 检查配置文件是否存在
+    if [[ -f /etc/vsftpd.conf ]] && grep -q "BRCE FTP Lite" /etc/vsftpd.conf 2>/dev/null; then
+        has_config=true
+    fi
+    
+    # 检查FTP用户是否存在
+    if getent group ftp-users >/dev/null 2>&1; then
+        local ftp_users=$(getent group ftp-users | cut -d: -f4)
+        if [[ -n "$ftp_users" ]]; then
+            has_users=true
+        fi
+    fi
+    
+    # 检查服务是否运行
+    if systemctl is-active --quiet vsftpd 2>/dev/null; then
+        has_service=true
+    fi
+    
+    # 如果所有组件都已安装且服务运行，认为已完全安装
+    if [[ "$has_vsftpd" == true && "$has_config" == true && "$has_users" == true && "$has_service" == true ]]; then
+        return 0  # 已完全安装
+    else
+        return 1  # 未完全安装
+    fi
+}
+
 # 主安装函数
 install_ftp_lite() {
     log_function_start "install_ftp_lite"
+    
+    # 检查是否已经安装
+    if check_installation_status; then
+        echo ""
+        echo "ℹ️ FTP服务已经安装并运行"
+        echo ""
+        echo "📊 当前状态："
+        echo "   ✅ vsftpd: 已安装"
+        echo "   ✅ 配置文件: 已生成"
+        echo "   ✅ FTP用户: 已创建"
+        echo "   ✅ 服务状态: 运行中"
+        echo ""
+        echo "💡 如需重新配置，请先选择 '14) 🗑️ 卸载服务'"
+        echo ""
+        read -p "按回车键返回主菜单..." -r
+        log_function_end "install_ftp_lite" "0"
+        return 0
+    fi
+    
+    # 先进行环境诊断
+    if ! diagnose_install_env; then
+        log_function_end "install_ftp_lite" "1"
+        return 1
+    fi
     
     echo ""
     echo "======================================================"
@@ -793,6 +927,21 @@ install_ftp_lite() {
     fi
     log_info "用户确认开始安装"
     
+    # 安装过程中断保护和状态追踪
+    echo ""
+    echo "⚠️ 重要提示："
+    echo "   • 安装过程中请勿使用 Ctrl+C 中断"
+    echo "   • 如遇问题，请等待安装完成后查看错误日志"
+    echo "   • 安装通常需要1-3分钟，请耐心等待"
+    echo "   • 每个步骤都会显示明确的成功/失败状态"
+    echo ""
+    
+    # 标记安装开始
+    log_info "=== 开始安装流程 ==="
+    log_info "用户: $ftp_user, 录制目录: $recording_dir"
+    
+    read -p "按回车键开始安装..." -r
+    
     # 开始安装
     echo ""
     echo "🚀 开始安装..."
@@ -810,16 +959,40 @@ install_ftp_lite() {
     echo "📦 步骤1/5: 安装vsftpd..."
     log_info "开始安装 vsftpd"
     log_debug "调用 install_vsftpd 函数"
-    if ! install_vsftpd; then
-        log_error "vsftpd 安装失败"
-        echo "❌ 安装步骤失败，请检查网络连接和权限"
-        echo "📝 详细日志请查看: $LOG_FILE"
+    
+    # 先检查是否已安装
+    if command -v vsftpd >/dev/null 2>&1; then
+        echo "ℹ️ vsftpd 已安装，跳过安装步骤"
+        log_info "vsftpd 已安装，版本: $(vsftpd -v 2>&1 | head -1 || echo '未知')"
+    else
+        if ! install_vsftpd; then
+            log_error "vsftpd 安装失败"
+            echo "❌ 安装步骤失败，请检查网络连接和权限"
+            echo "📝 详细日志请查看: $LOG_FILE"
+            echo ""
+            echo "💡 常见解决方案："
+            echo "   1. 检查网络连接: ping 8.8.8.8"
+            echo "   2. 更新软件包源: apt update 或 yum update"
+            echo "   3. 检查root权限: whoami"
+            echo "   4. 手动安装: apt install vsftpd"
+            read -p "按回车键返回主菜单..." -r
+            log_function_end "install_ftp_lite" "1"
+            return 1
+        fi
+    fi
+    
+    # 验证安装结果
+    if command -v vsftpd >/dev/null 2>&1; then
+        local vsftpd_version=$(vsftpd -v 2>&1 | head -1 || echo '未知版本')
+        echo "✅ vsftpd 安装完成: $vsftpd_version"
+        log_info "vsftpd 安装成功: $vsftpd_version"
+    else
+        log_error "vsftpd 安装验证失败"
+        echo "❌ vsftpd 安装验证失败"
         read -p "按回车键返回主菜单..." -r
         log_function_end "install_ftp_lite" "1"
         return 1
     fi
-    echo "✅ vsftpd 安装完成"
-    log_info "vsftpd 安装成功"
     
     # 创建FTP用户
     echo "👤 步骤2/5: 创建FTP用户..."
@@ -878,6 +1051,17 @@ install_ftp_lite() {
     echo "✅ 服务启动完成"
     log_info "服务启动成功"
     
+    # 最终验证安装状态
+    echo ""
+    echo "🔍 最终验证安装状态..."
+    if check_installation_status; then
+        echo "✅ 安装状态验证通过"
+        log_info "安装状态验证：成功"
+    else
+        echo "⚠️ 安装状态验证失败，但继续显示结果"
+        log_warn "安装状态验证：部分组件可能有问题"
+    fi
+    
     # 获取服务器IP
     log_debug "获取服务器IP地址"
     local server_ip=$(get_server_ip)
@@ -917,7 +1101,22 @@ install_ftp_lite() {
     echo "📝 日志文件: $LOG_FILE"
     echo ""
     
+    # 安装成功，标记状态
+    log_info "✅ $SCRIPT_NAME 安装完全成功"
+    
     log_function_end "install_ftp_lite" "0"
+    
+    echo ""
+    echo "🎉 安装成功完成！"
+    echo ""
+    echo "📌 下一步操作："
+    echo "   1. 配置录播姬输出目录为: $recording_dir"
+    echo "   2. 使用FTP客户端连接测试"
+    echo "   3. 选择菜单 '2) 📊 查看服务状态' 确认运行正常"
+    echo ""
+    echo "💡 提示：安装已完全完成，按回车返回主菜单"
+    log_info "=== 安装流程完全结束 ==="
+    
     read -p "按回车键返回主菜单..." -r
 }
 
@@ -1215,13 +1414,16 @@ add_user() {
         return 1
     fi
     
-    read -p "📁 请输入要映射的源目录 (默认: /root/brec/file): " source_dir
-    source_dir=${source_dir:-/root/brec/file}
+        # 轻量版使用固定的录制目录
+    local recording_dir="/opt/brec/file"
     
-    if [[ ! -d "$source_dir" ]]; then
-        log_error "源目录不存在: $source_dir"
-        read -p "按回车键返回..." -r
-        return 1
+    if [[ ! -d "$recording_dir" ]]; then
+        echo "📁 录制目录不存在，创建中: $recording_dir"
+        if ! mkdir -p "$recording_dir"; then
+            log_error "无法创建录制目录: $recording_dir"
+            read -p "按回车键返回..." -r
+            return 1
+        fi
     fi
     
     # 生成密码
@@ -1231,8 +1433,8 @@ add_user() {
     echo "📋 新用户信息："
     echo "   👤 用户名: $new_username"
     echo "   🔐 密码: $new_password"
-    echo "   📁 源目录: $source_dir"
-    echo "   📁 FTP目录: /home/$new_username/ftp (读写映射到 $source_dir)"
+    echo "   📁 录制目录: $recording_dir"
+    echo "   📁 FTP登录目录: $recording_dir (直接访问)"
     echo "   📁 用户权限: 可以读取、写入、删除文件"
     echo ""
     
@@ -1240,13 +1442,13 @@ add_user() {
     confirm=${confirm:-Y}
     
     if [[ "$confirm" =~ ^[Yy]$ ]]; then
-        if create_ftp_user "$new_username" "$new_password" "/opt/brec/file"; then
+        if create_ftp_user "$new_username" "$new_password" "$recording_dir"; then
             echo ""
             echo "✅ 用户添加成功！"
             echo "   👤 用户名: $new_username"
             echo "   🔐 密码: $new_password"
-            echo "   📁 用户家目录: /opt/brec/file"
-            echo "   📁 录制目录: /opt/brec/file (与家目录相同)"
+            echo "   📁 用户家目录: $recording_dir"
+            echo "   📁 录制目录: $recording_dir (与家目录相同)"
             echo "   📁 用户权限: 可以读取、写入、删除文件"
         else
             log_error "用户添加失败"
@@ -1290,12 +1492,40 @@ change_password() {
     done
     echo ""
     
-    read -p "请输入要修改密码的用户名: " target_user
+    read -p "请输入要修改密码的用户（数字序号或用户名）: " user_input
     
-    if ! id "$target_user" &>/dev/null; then
-        log_error "用户不存在: $target_user"
-        read -p "按回车键返回..." -r
-        return 1
+    # 智能解析用户输入
+    local target_user=""
+    
+    # 检查是否输入的是数字序号
+    if [[ "$user_input" =~ ^[0-9]+$ ]]; then
+        local user_index=$((user_input - 1))
+        if [[ $user_index -ge 0 && $user_index -lt ${#users[@]} ]]; then
+            target_user="${users[$user_index]}"
+            echo "✅ 已选择用户: $target_user (序号 $user_input)"
+        else
+            log_error "无效的序号 '$user_input'，请输入 1-${#users[@]} 之间的数字"
+            read -p "按回车键返回..." -r
+            return 1
+        fi
+    else
+        # 检查是否输入的是用户名
+        local user_found=false
+        for user in "${users[@]}"; do
+            if [[ "$user" == "$user_input" ]]; then
+                target_user="$user_input"
+                user_found=true
+                echo "✅ 已选择用户: $target_user"
+                break
+            fi
+        done
+        
+        if [[ "$user_found" == false ]]; then
+            log_error "用户 '$user_input' 不存在"
+            echo "💡 提示：请输入序号（如：1、2）或完整用户名"
+            read -p "按回车键返回..." -r
+            return 1
+        fi
     fi
     
     # 生成新密码
@@ -1434,21 +1664,41 @@ delete_user() {
     done
     echo ""
     
-    read -p "请输入要删除的用户名: " target_user
+    read -p "请输入要删除的用户（数字序号或用户名）: " user_input
     
-    # 验证输入的用户
+    # 智能解析用户输入
+    local target_user=""
     local user_found=false
-    for user in "${valid_users[@]}"; do
-        if [[ "$user" == "$target_user" ]]; then
-            user_found=true
-            break
-        fi
-    done
     
-    if [[ "$user_found" == false ]]; then
-        log_error "用户 '$target_user' 不在可删除列表中"
-        read -p "按回车键返回..." -r
-        return 1
+    # 检查是否输入的是数字序号
+    if [[ "$user_input" =~ ^[0-9]+$ ]]; then
+        local user_index=$((user_input - 1))
+        if [[ $user_index -ge 0 && $user_index -lt ${#valid_users[@]} ]]; then
+            target_user="${valid_users[$user_index]}"
+            user_found=true
+            echo "✅ 已选择用户: $target_user (序号 $user_input)"
+        else
+            log_error "无效的序号 '$user_input'，请输入 1-${#valid_users[@]} 之间的数字"
+            read -p "按回车键返回..." -r
+            return 1
+        fi
+    else
+        # 检查是否输入的是用户名
+        for user in "${valid_users[@]}"; do
+            if [[ "$user" == "$user_input" ]]; then
+                target_user="$user_input"
+                user_found=true
+                echo "✅ 已选择用户: $target_user"
+                break
+            fi
+        done
+        
+        if [[ "$user_found" == false ]]; then
+            log_error "用户 '$user_input' 不在可删除列表中"
+            echo "💡 提示：请输入序号（如：1、2）或完整用户名（如：ethan、sunny）"
+            read -p "按回车键返回..." -r
+            return 1
+        fi
     fi
     
     local recording_dir="/opt/brec/file"
@@ -2091,7 +2341,8 @@ execute_update() {
     if [[ "$restart_script" =~ ^[Yy]$ ]]; then
         echo ""
         echo "🚀 重启脚本..."
-        sleep 2
+        echo "⚠️ 注意：脚本将完全重启，回到主菜单"
+        sleep 3
         exec "$current_script"
     fi
 }
