@@ -8,7 +8,7 @@
 set -o pipefail
 
 # 全局配置
-readonly SCRIPT_VERSION="v1.0.1"
+readonly SCRIPT_VERSION="v1.0.2"
 readonly LOG_FILE="/var/log/brce_ftp_lite.log"
 SOURCE_DIR="/opt/brec/file"
 FTP_USER=""
@@ -586,6 +586,74 @@ test_realtime_access() {
     return 0
 }
 
+# 挂载bind mount
+mount_bind_mount() {
+    local ftp_home="/home/$FTP_USER/ftp"
+    
+    echo "🔗 挂载bind mount..."
+    
+    # 检查源目录是否存在
+    if [[ ! -d "$SOURCE_DIR" ]]; then
+        echo "❌ 源目录不存在: $SOURCE_DIR"
+        return 1
+    fi
+    
+    # 检查FTP用户目录是否存在
+    if [[ ! -d "$ftp_home" ]]; then
+        echo "❌ FTP用户目录不存在: $ftp_home"
+        return 1
+    fi
+    
+    # 卸载旧挂载（如果存在）
+    if mountpoint -q "$ftp_home" 2>/dev/null; then
+        echo "📤 卸载旧挂载..."
+        umount "$ftp_home" 2>/dev/null || true
+    fi
+    
+    # 创建只读bind mount
+    if mount --bind -o ro "$SOURCE_DIR" "$ftp_home"; then
+        echo "✅ bind mount挂载成功"
+        log_info "bind mount挂载成功: $SOURCE_DIR -> $ftp_home"
+        return 0
+    else
+        echo "❌ bind mount挂载失败"
+        log_error "bind mount挂载失败: $SOURCE_DIR -> $ftp_home"
+        return 1
+    fi
+}
+
+# 验证bind mount状态
+verify_bind_mount() {
+    local ftp_home="/home/$FTP_USER/ftp"
+    
+    echo "🔍 验证bind mount状态..."
+    
+    # 检查挂载点
+    if mountpoint -q "$ftp_home" 2>/dev/null; then
+        echo "   ✅ 挂载点正常"
+        
+        # 检查挂载类型
+        local mount_info=$(mount | grep "$ftp_home")
+        if echo "$mount_info" | grep -q "bind"; then
+            echo "   ✅ bind mount类型正确"
+        else
+            echo "   ⚠️  挂载类型异常"
+        fi
+        
+        # 检查只读模式
+        if echo "$mount_info" | grep -q "ro"; then
+            echo "   ✅ 只读模式正确"
+        else
+            echo "   ⚠️  未检测到只读模式"
+        fi
+        
+        return 0
+    else
+        echo "   ❌ 挂载点异常"
+        return 1
+    fi
+}
+
 # 检查服务状态
 check_service_status() {
     echo ""
@@ -635,9 +703,19 @@ check_service_status() {
     local ftp_home="/home/$FTP_USER/ftp"
     if mountpoint -q "$ftp_home" 2>/dev/null; then
         echo "✅ 文件映射正常"
+        
+        # 验证bind mount状态
+        verify_bind_mount
     else
         echo "❌ 文件映射异常"
-        return 1
+        echo "💡 尝试重新挂载..."
+        
+        if mount_bind_mount; then
+            echo "✅ 文件映射已修复"
+        else
+            echo "❌ 文件映射修复失败"
+            return 1
+        fi
     fi
     
     # 实时性测试
@@ -1105,6 +1183,118 @@ uninstall_ftp_service() {
     return 0
 }
 
+# 挂载文件映射菜单
+mount_bind_mount_menu() {
+    echo ""
+    echo "======================================================"
+    echo "🔗 挂载文件映射"
+    echo "======================================================"
+    echo ""
+    
+    # 检查是否有FTP用户
+    if [[ -z "$FTP_USER" ]]; then
+        echo "❌ 没有检测到FTP用户"
+        echo "💡 请先安装FTP服务"
+        return 1
+    fi
+    
+    local ftp_home="/home/$FTP_USER/ftp"
+    
+    echo "📋 当前状态："
+    echo "   源目录: $SOURCE_DIR"
+    echo "   映射目录: $ftp_home"
+    echo "   用户: $FTP_USER"
+    echo ""
+    
+    # 检查源目录
+    if [[ ! -d "$SOURCE_DIR" ]]; then
+        echo "❌ 源目录不存在: $SOURCE_DIR"
+        echo "💡 请先创建源目录"
+        return 1
+    fi
+    
+    # 检查FTP用户目录
+    if [[ ! -d "$ftp_home" ]]; then
+        echo "❌ FTP用户目录不存在: $ftp_home"
+        echo "💡 请先安装FTP服务"
+        return 1
+    fi
+    
+    # 检查当前挂载状态
+    if mountpoint -q "$ftp_home" 2>/dev/null; then
+        echo "✅ 当前已挂载"
+        echo ""
+        echo "请选择操作："
+        echo "1) 🔄 重新挂载"
+        echo "2) 📤 卸载挂载"
+        echo "3) 🔍 验证挂载状态"
+        echo "0) ⬅️ 返回主菜单"
+        echo ""
+        read -p "请输入选项 (0-3): " mount_choice
+        
+        case $mount_choice in
+            1)
+                echo "🔄 重新挂载..."
+                if mount_bind_mount; then
+                    echo "✅ 重新挂载成功"
+                    verify_bind_mount
+                else
+                    echo "❌ 重新挂载失败"
+                fi
+                ;;
+            2)
+                echo "📤 卸载挂载..."
+                if umount "$ftp_home" 2>/dev/null; then
+                    echo "✅ 挂载已卸载"
+                else
+                    echo "❌ 卸载失败"
+                fi
+                ;;
+            3)
+                verify_bind_mount
+                ;;
+            0)
+                return 0
+                ;;
+            *)
+                echo "❌ 无效选项"
+                ;;
+        esac
+    else
+        echo "❌ 当前未挂载"
+        echo ""
+        echo "请选择操作："
+        echo "1) 🔗 挂载文件映射"
+        echo "2) 🔍 检查挂载状态"
+        echo "0) ⬅️ 返回主菜单"
+        echo ""
+        read -p "请输入选项 (0-2): " mount_choice
+        
+        case $mount_choice in
+            1)
+                echo "🔗 挂载文件映射..."
+                if mount_bind_mount; then
+                    echo "✅ 挂载成功"
+                    verify_bind_mount
+                else
+                    echo "❌ 挂载失败"
+                fi
+                ;;
+            2)
+                verify_bind_mount
+                ;;
+            0)
+                return 0
+                ;;
+            *)
+                echo "❌ 无效选项"
+                ;;
+        esac
+    fi
+    
+    return 0
+}
+
 # 检查脚本更新
 check_script_update() {
     echo ""
@@ -1208,13 +1398,14 @@ main_menu() {
         echo "4) ⏹️ 停止FTP服务"
         echo "5) 👥 FTP用户管理"
         echo "6) 🧪 实时性测试"
-        echo "7) 🔄 检查脚本更新"
-        echo "8) 🗑️ 卸载FTP服务"
+        echo "7) 🔗 挂载文件映射"
+        echo "8) 🔄 检查脚本更新"
+        echo "9) 🗑️ 卸载FTP服务"
         echo "0) 退出"
         echo ""
         echo "📝 快捷键： Ctrl+C 快速退出"
         echo ""
-        read -p "请输入选项 (0-8): " choice
+        read -p "请输入选项 (0-9): " choice
         
         case $choice in
             1)
@@ -1245,10 +1436,14 @@ main_menu() {
                 read -p "按回车键返回主菜单..." -r
                 ;;
             7)
-                check_script_update
+                mount_bind_mount_menu
                 read -p "按回车键返回主菜单..." -r
                 ;;
             8)
+                check_script_update
+                read -p "按回车键返回主菜单..." -r
+                ;;
+            9)
                 uninstall_ftp_service
                 read -p "按回车键返回主菜单..." -r
                 ;;
