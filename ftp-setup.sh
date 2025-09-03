@@ -865,9 +865,9 @@ sync_to_source() {
 
 # 监控源目录变化→FTP目录（录播优化版）
 monitor_source() {
-    while true; do
-        if inotifywait -m -r -e modify,create,delete,move,moved_to,moved_from "$SOURCE_DIR" 2>/dev/null |
-            while read -r path action file; do
+            while true; do
+            if inotifywait -m -r -e modify,create,delete,move,moved_to,moved_from "$SOURCE_DIR" 2>/dev/null |
+        while read -r path action file; do
                 local full_path="$path$file"
                 
                 # 智能过滤：跳过临时文件和正在写入的文件
@@ -880,11 +880,11 @@ monitor_source() {
                                 # 录播保护模式：延迟同步，减少对录播的影响
                                 sleep 3
                             else
-                                log_sync "源目录变化: $action $file"
+            log_sync "源目录变化: $action $file"
                                 # 标准模式：快速同步
                                 sleep 0.1
                             fi
-                            sync_to_target
+            sync_to_target
                         else
                             log_sync "源目录变化: $action $file (已跳过，录播保护)"
                         fi
@@ -902,7 +902,7 @@ monitor_source() {
                         sync_to_target
                         ;;
                 esac
-            done; then
+        done; then
             log_sync "源目录监控正常重启"
         else
             log_sync "ERROR: 源目录监控失败，尝试重启..."
@@ -913,13 +913,13 @@ monitor_source() {
 
 # 监控FTP目录变化→源目录  
 monitor_target() {
-    while true; do
-        if inotifywait -m -r -e modify,create,delete,move,moved_to,moved_from "$TARGET_DIR" 2>/dev/null |
-            while read -r path action file; do
-                log_sync "FTP目录变化: $action $file"
-                sleep 0.05
-                sync_to_source
-            done; then
+            while true; do
+            if inotifywait -m -r -e modify,create,delete,move,moved_to,moved_from "$TARGET_DIR" 2>/dev/null |
+        while read -r path action file; do
+            log_sync "FTP目录变化: $action $file"
+            sleep 0.05
+            sync_to_source
+        done; then
             log_sync "FTP目录监控正常重启"
         else
             log_sync "ERROR: FTP目录监控失败，尝试重启..."
@@ -943,7 +943,7 @@ trap cleanup SIGTERM SIGINT
 # 初始同步（源→目标）
 log_sync "执行初始同步（源→FTP）..."
 sync_to_target
-log_sync "初始同步完成，开始双向监控..."
+    log_sync "初始同步完成，开始双向监控..."
 
 # 启动双向监控（后台并行运行）
 monitor_source &
@@ -1184,7 +1184,7 @@ install_brce_ftp() {
         echo "   sudo dnf install -y rsync inotify-tools      # Fedora"
     fi
     
-        # 创建用户（基于主程序逻辑）
+    # 创建用户（基于主程序逻辑）
     log_step_start "用户配置"
     log_info "配置FTP用户: $FTP_USER"
     if id -u "$FTP_USER" &>/dev/null; then
@@ -2782,9 +2782,9 @@ test_realtime_sync() {
 update_script() {
     while true; do
         clear
-        echo "======================================================"
-        echo "🔄 BRCE FTP脚本在线更新"
-        echo "======================================================"
+    echo "======================================================"
+    echo "🔄 BRCE FTP脚本在线更新"
+    echo "======================================================"
         echo ""
         echo "请选择更新方式："
         echo "1) 🔍 检查更新 (智能更新)"
@@ -2954,8 +2954,8 @@ perform_smart_update() {
     
     if [[ ! "$confirm_update" =~ ^[Yy]$ ]]; then
         echo "✅ 取消更新，保持当前版本"
-        rm -f "$TEMP_SCRIPT"
-        return 0
+            rm -f "$TEMP_SCRIPT"
+            return 0
     fi
     
     # 显示更新日志（如果有的话）
@@ -3404,7 +3404,7 @@ execute_uninstall_process() {
     echo "   🗑️ 清理fstab挂载条目..."
     sed -i '/ftp.*bind/d' /etc/fstab 2>/dev/null || true
     echo "   ✅ 配置处理完成"
-    echo ""
+        echo ""
     
     # 阶段5: 日志和临时文件清理
     if [[ "$mode" -ge 2 ]]; then
@@ -3448,11 +3448,11 @@ execute_uninstall_process() {
         
         # 卸载vsftpd
         echo "   📦 卸载vsftpd软件包..."
-        if command -v apt-get &> /dev/null; then
-            apt-get remove --purge -y vsftpd 2>/dev/null || true
+            if command -v apt-get &> /dev/null; then
+                apt-get remove --purge -y vsftpd 2>/dev/null || true
             apt-get autoremove -y 2>/dev/null || true
-        elif command -v yum &> /dev/null; then
-            yum remove -y vsftpd 2>/dev/null || true
+            elif command -v yum &> /dev/null; then
+                yum remove -y vsftpd 2>/dev/null || true
         elif command -v dnf &> /dev/null; then
             dnf remove -y vsftpd 2>/dev/null || true
         fi
@@ -3472,7 +3472,7 @@ execute_uninstall_process() {
         fi
         
         echo "   ✅ 深度清理完成"
-        echo ""
+    echo ""
     fi
     
     # 阶段7: 系统清理

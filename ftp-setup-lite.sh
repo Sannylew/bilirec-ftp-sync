@@ -451,7 +451,10 @@ manage_logs() {
     else
         echo "⚠️ 日志文件不存在"
         echo ""
-        read -p "按回车键返回主菜单..." -r
+        if ! read -p "按回车键返回主菜单..." -r 2>/dev/null; then
+            echo "⚠️ 输入读取错误，已自动返回主菜单"
+            sleep 1
+        fi
         return
     fi
     
@@ -462,7 +465,14 @@ manage_logs() {
     echo "4) 🗑️ 清理日志文件"
     echo "0) ⬅️ 返回主菜单"
     echo ""
-    read -p "请输入选项 (0-4): " log_choice
+    if ! read -p "请输入选项 (0-4): " log_choice 2>/dev/null; then
+        echo ""
+        echo "⚠️ 输入读取错误，已返回主菜单"
+        # 重置标准输入，避免持续空白
+        exec 0</dev/tty
+        sleep 1
+        return
+    fi
     
     case $log_choice in
         1)
@@ -481,7 +491,11 @@ manage_logs() {
             ;;
         3)
             echo ""
-            read -p "🔍 请输入搜索关键词: " search_keyword
+            if ! read -p "🔍 请输入搜索关键词: " search_keyword 2>/dev/null; then
+                echo "⚠️ 输入读取错误，搜索已取消"
+                sleep 1
+                break
+            fi
             if [[ -n "$search_keyword" ]]; then
                 echo ""
                 echo "🔍 搜索结果 (关键词: $search_keyword)："
@@ -496,7 +510,9 @@ manage_logs() {
             echo ""
             echo "🧹 清理日志文件"
             echo "📁 文件: $LOG_FILE"
-            read -p "确认清理？(Y/n): " confirm_clean
+            if ! read -p "确认清理？(Y/n): " confirm_clean 2>/dev/null; then
+                confirm_clean="Y"
+            fi
             confirm_clean=${confirm_clean:-Y}
             if [[ "$confirm_clean" =~ ^[Yy]$ ]]; then
                 if > "$LOG_FILE" 2>/dev/null; then
@@ -522,7 +538,10 @@ manage_logs() {
     esac
     
     echo ""
-    read -p "按回车键返回主菜单..." -r
+    if ! read -p "按回车键返回主菜单..." -r 2>/dev/null; then
+        echo "⚠️ 输入读取错误，已自动返回主菜单"
+        sleep 1
+    fi
 }
 
 # 诊断vsftpd启动问题
@@ -757,7 +776,10 @@ diagnose_install_env() {
         echo "⚠️ 发现 $issues 个问题，可能影响安装"
         read -p "是否仍要继续安装？(y/N): " force_install
         if [[ ! "$force_install" =~ ^[Yy]$ ]]; then
+            echo ""
+            echo "✅ 用户选择：取消安装"
             echo "❌ 安装已取消"
+            echo ""
             return 1
         fi
     else
@@ -871,7 +893,10 @@ install_ftp_lite() {
     confirm=${confirm:-Y}
     log_debug "用户输入: $confirm"
     if [[ ! "$confirm" =~ ^[Yy]$ ]]; then
+        echo ""
+        echo "✅ 用户选择：取消安装"
         echo "❌ 安装已取消"
+        echo ""
         log_info "用户取消安装"
         log_function_end "install_ftp_lite" "0"
         return 0
@@ -975,6 +1000,10 @@ install_ftp_lite() {
     log_debug "最终确认: $confirm"
     
     if [[ ! "$confirm" =~ ^[Yy]$ ]]; then
+        echo ""
+        echo "✅ 用户选择：取消安装"
+        echo "❌ 安装已取消"
+        echo ""
         log_info "用户取消安装"
         log_function_end "install_ftp_lite" "1"
         return 1
@@ -1460,7 +1489,10 @@ add_user() {
     
     read -p "👤 新用户名 (直接回车取消): " new_username
     if [[ -z "$new_username" ]]; then
-        echo "❌ 用户名不能为空，已取消"
+        echo ""
+        echo "✅ 用户选择：取消添加用户"
+        echo "❌ 用户名不能为空，已取消添加"
+        echo ""
         read -p "按回车键返回..." -r
         return 1
     fi
@@ -2085,6 +2117,8 @@ stop_ftp_service() {
     read -p "🛑 确认停止vsftpd服务？(y/N): " confirm_stop
     
     if [[ ! "$confirm_stop" =~ ^[Yy]$ ]]; then
+        echo ""
+        echo "✅ 用户选择：取消停止服务"
         echo "✅ 已取消停止操作"
         echo ""
         read -p "按回车键返回主菜单..." -r
@@ -2114,6 +2148,8 @@ stop_ftp_service() {
                     echo "⚠️ 禁用开机自启动失败"
                 fi
             else
+                echo ""
+                echo "✅ 用户选择：保持开机自启动"
                 echo "ℹ️ 保持开机自启动设置"
             fi
             
@@ -2301,7 +2337,10 @@ perform_smart_update() {
     fi
     
     if [[ ! "$confirm_update" =~ ^[Yy]$ ]]; then
+        echo ""
+        echo "✅ 用户选择：取消更新"
         echo "✅ 取消更新，保持当前版本"
+        echo ""
         rm -f "$TEMP_SCRIPT"
         return 0
     fi
@@ -2334,7 +2373,10 @@ perform_force_update() {
     echo "⚠️ 强制更新将无条件覆盖当前脚本"
     read -p "确认执行强制更新？(y/N): " confirm_force
     if [[ ! "$confirm_force" =~ ^[Yy]$ ]]; then
+        echo ""
+        echo "✅ 用户选择：取消强制更新"
         echo "✅ 取消强制更新"
+        echo ""
         return 0
     fi
     
@@ -2412,7 +2454,10 @@ perform_fix_and_update() {
     echo "⚠️ 注意：更新后可能会恢复到GitHub版本(可能包含备份功能)"
     read -p "确认执行修复更新？(y/N): " confirm_fix
     if [[ ! "$confirm_fix" =~ ^[Yy]$ ]]; then
+        echo ""
+        echo "✅ 用户选择：取消修复更新"
         echo "✅ 取消更新"
+        echo ""
         rm -f "$TEMP_SCRIPT"
         return 0
     fi
@@ -2504,6 +2549,10 @@ uninstall_service() {
     
     read -p "确认卸载？(y/N): " confirm
     if [[ ! "$confirm" =~ ^[Yy]$ ]]; then
+        echo ""
+        echo "✅ 用户选择：取消卸载"
+        echo "❌ 卸载已取消"
+        echo ""
         log_info "取消卸载"
         read -p "按回车键返回主菜单..." -r
         return 0
@@ -2882,32 +2931,10 @@ main_menu() {
                 sleep 1
                 ;;
             10) 
-                echo ""
-                echo "📖 查看最新20行日志："
-                echo "======================================================"
-                tail -20 "$LOG_FILE" 2>/dev/null || echo "❌ 读取日志失败"
-                echo "======================================================"
-                echo ""
-                read -p "按回车键返回主菜单..." -r
+                manage_logs
                 ;;
             11) 
-                echo ""
-                echo "🧹 清理日志文件"
-                echo "📁 文件: $LOG_FILE"
-                read -p "确认清理？(Y/n): " confirm_clean
-                confirm_clean=${confirm_clean:-Y}
-                if [[ "$confirm_clean" =~ ^[Yy]$ ]]; then
-                    if > "$LOG_FILE" 2>/dev/null; then
-                        echo "✅ 日志文件已清理"
-                        log_info "日志文件已被用户手动清理"
-                    else
-                        echo "❌ 日志清理失败"
-                    fi
-                else
-                    echo "❌ 清理已取消"
-                fi
-                echo ""
-                read -p "按回车键返回主菜单..." -r
+                manage_logs
                 ;;
             12) 
                 update_script
