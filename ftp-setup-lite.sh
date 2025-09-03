@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # BRCE FTP 精简版配置脚本
-# 版本: v1.0.0 - 文件映射版本
+# 版本: v1.0.3 - 文件映射版本
 # 专为录播姬设计的轻量级FTP服务，使用bind mount映射
 
 # 部分严格模式 - 避免交互过程中意外退出
@@ -1057,7 +1057,7 @@ add_ftp_user() {
     chmod 755 "$ftp_home"
     
     # 创建bind mount
-    if mount --bind "$SOURCE_DIR" "$ftp_home"; then
+    if mount --bind -o ro "$SOURCE_DIR" "$ftp_home"; then
         echo "✅ 文件映射创建成功"
     else
         echo "❌ 文件映射创建失败"
@@ -1066,7 +1066,7 @@ add_ftp_user() {
     fi
     
     # 添加到fstab
-    local fstab_entry="$SOURCE_DIR $ftp_home none bind 0 0"
+    local fstab_entry="$SOURCE_DIR $ftp_home none bind,ro 0 0"
     if ! grep -q "$ftp_home" /etc/fstab 2>/dev/null; then
         echo "$fstab_entry" >> /etc/fstab
     fi
