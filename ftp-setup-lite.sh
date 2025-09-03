@@ -8,7 +8,7 @@
 set -o pipefail
 
 # 全局配置
-readonly SCRIPT_VERSION="v1.1.4"
+readonly SCRIPT_VERSION="v1.1.7"
 readonly LOG_FILE="/var/log/brce_ftp_lite.log"
 SOURCE_DIR="/opt/brec/file"
 FTP_USER=""
@@ -361,7 +361,7 @@ verify_security_permissions() {
     if mountpoint -q "$ftp_home" 2>/dev/null; then
         echo "   ✅ 只读文件映射正常"
         # 检查是否为只读挂载
-        if mount | grep "$ftp_home" | grep -q "ro"; then
+        if mount | grep "$ftp_home" | tail -1 | grep -q "(ro,"; then
             echo "   ✅ 确认只读模式挂载"
         else
             echo "   ⚠️  挂载模式需要检查"
@@ -645,7 +645,7 @@ verify_bind_mount() {
         echo "   ✅ 挂载点正常"
         
         # 检查挂载类型
-        local mount_info=$(mount | grep "$ftp_home")
+        local mount_info=$(mount | grep "$ftp_home" | tail -1)
         if echo "$mount_info" | grep -q "bind"; then
             echo "   ✅ bind mount类型正确"
         else
@@ -653,7 +653,7 @@ verify_bind_mount() {
         fi
         
         # 检查只读模式
-        if echo "$mount_info" | grep -q "ro"; then
+        if echo "$mount_info" | grep -q "(ro,"; then
             echo "   ✅ 只读模式正确"
         else
             echo "   ⚠️  未检测到只读模式"
@@ -1451,7 +1451,7 @@ show_current_permission_status() {
     
     # 检查挂载状态
     if mountpoint -q "$ftp_home" 2>/dev/null; then
-        local mount_info=$(mount | grep "$ftp_home" | head -1)
+        local mount_info=$(mount | grep "$ftp_home" | tail -1)
         if echo "$mount_info" | grep -q "(ro,"; then
             echo "   挂载状态: ✅ 只读挂载"
         else
@@ -1625,7 +1625,7 @@ show_permission_details() {
         local ftp_home="/home/$FTP_USER/ftp"
         if mountpoint -q "$ftp_home" 2>/dev/null; then
             echo "🔗 挂载状态: 已挂载"
-            local mount_info=$(mount | grep "$ftp_home")
+            local mount_info=$(mount | grep "$ftp_home" | tail -1)
             if echo "$mount_info" | grep -q "(ro,"; then
                 echo "   模式: 只读"
             else
