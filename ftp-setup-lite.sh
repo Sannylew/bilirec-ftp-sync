@@ -8,7 +8,7 @@
 set -o pipefail
 
 # 全局配置
-readonly SCRIPT_VERSION="v1.0.2"
+readonly SCRIPT_VERSION="v1.0.3"
 readonly LOG_FILE="/var/log/brce_ftp_lite.log"
 SOURCE_DIR="/opt/brec/file"
 FTP_USER=""
@@ -699,6 +699,24 @@ check_service_status() {
         return 1
     fi
     
+    # 自动检测FTP用户
+    if [[ -z "$FTP_USER" ]]; then
+        echo "🔍 自动检测FTP用户..."
+        for user in $(getent passwd | cut -d: -f1); do
+            if [[ -d "/home/$user/ftp" ]]; then
+                FTP_USER="$user"
+                echo "✅ 检测到FTP用户: $FTP_USER"
+                break
+            fi
+        done
+        
+        if [[ -z "$FTP_USER" ]]; then
+            echo "❌ 未检测到FTP用户"
+            echo "💡 请先安装FTP服务"
+            return 1
+        fi
+    fi
+    
     # 检查文件映射
     local ftp_home="/home/$FTP_USER/ftp"
     if mountpoint -q "$ftp_home" 2>/dev/null; then
@@ -1191,11 +1209,22 @@ mount_bind_mount_menu() {
     echo "======================================================"
     echo ""
     
-    # 检查是否有FTP用户
+    # 自动检测FTP用户
     if [[ -z "$FTP_USER" ]]; then
-        echo "❌ 没有检测到FTP用户"
-        echo "💡 请先安装FTP服务"
-        return 1
+        echo "🔍 自动检测FTP用户..."
+        for user in $(getent passwd | cut -d: -f1); do
+            if [[ -d "/home/$user/ftp" ]]; then
+                FTP_USER="$user"
+                echo "✅ 检测到FTP用户: $FTP_USER"
+                break
+            fi
+        done
+        
+        if [[ -z "$FTP_USER" ]]; then
+            echo "❌ 未检测到FTP用户"
+            echo "💡 请先安装FTP服务"
+            return 1
+        fi
     fi
     
     local ftp_home="/home/$FTP_USER/ftp"
