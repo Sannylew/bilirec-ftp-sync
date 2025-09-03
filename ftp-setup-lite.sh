@@ -8,7 +8,7 @@
 set -o pipefail
 
 # 全局配置
-readonly SCRIPT_VERSION="v1.1.8"
+readonly SCRIPT_VERSION="v1.2.5"
 readonly LOG_FILE="/var/log/brce_ftp_lite.log"
 SOURCE_DIR="/opt/brec/file"
 FTP_USER=""
@@ -1338,331 +1338,478 @@ mount_bind_mount_menu() {
     return 0
 }
 
-# 权限管理菜单
-permission_management_menu() {
+
+
+# 删除文件功能
+delete_file_function() {
     echo ""
     echo "======================================================"
-    echo "🔒 权限管理"
+    echo "🗑️ 删除文件功能"
     echo "======================================================"
     echo ""
     
-    # 自动检测FTP用户
-    if [[ -z "$FTP_USER" ]]; then
-        echo "🔍 自动检测FTP用户..."
-        for user in $(getent passwd | cut -d: -f1); do
-            if [[ -d "/home/$user/ftp" ]]; then
-                FTP_USER="$user"
-                echo "✅ 检测到FTP用户: $FTP_USER"
-                break
-            fi
-        done
-        
-        if [[ -z "$FTP_USER" ]]; then
-            echo "❌ 未检测到FTP用户"
-            echo "💡 请先安装FTP服务"
-            return 1
-        fi
+    if [[ ! -d "$SOURCE_DIR" ]]; then
+        echo "❌ 源目录不存在: $SOURCE_DIR"
+        return 1
     fi
     
-    echo "📋 当前权限状态："
-    echo "   用户: $FTP_USER"
-    echo "   源目录: $SOURCE_DIR"
+    echo "📁 当前目录: $SOURCE_DIR"
     echo ""
     
-    # 检查当前权限
-    if [[ -d "$SOURCE_DIR" ]]; then
-        local file_perms=$(stat -c %a "$SOURCE_DIR" 2>/dev/null)
-        echo "   目录权限: $file_perms"
-        
-        # 检查文件权限
-        local test_file=$(find "$SOURCE_DIR" -type f 2>/dev/null | head -1)
-        if [[ -n "$test_file" ]]; then
-            local file_perm=$(stat -c %a "$test_file" 2>/dev/null)
-            echo "   文件权限: $file_perm"
-        fi
+    # 显示文件列表（排除配置文件）
+    echo "📋 文件列表："
+    local file_count=0
+    while IFS= read -r -d '' file; do
+        file_count=$((file_count + 1))
+        local file_size=$(du -h "$file" | cut -f1)
+        local file_date=$(stat -c %y "$file" | cut -d' ' -f1)
+        echo "   $file_count) $(basename "$file") (${file_size}, $file_date)"
+    done < <(find "$SOURCE_DIR" -type f ! -name "config*.json" ! -name "*.backup" -print0 2>/dev/null | head -20 -z)
+    
+    if [[ $file_count -eq 0 ]]; then
+        echo "   📭 暂无文件"
+        echo ""
+        read -p "按回车键返回主菜单..." -r
+        return 0
     fi
     
     echo ""
-    echo "请选择权限模式："
-    echo "1) 🔒 只读模式 (推荐，安全)"
-    echo "2) 🗑️ 删除权限模式 (可删除文件)"
-    echo "3) ✏️ 读写权限模式 (可修改文件)"
-    echo "4) 🔍 查看当前权限详情"
+    echo "请选择操作："
+    echo "1) 🗑️ 删除指定文件"
+    echo "2) 🗑️ 删除3天前的文件"
+    echo "3) 🔍 查看文件详情"
     echo "0) ⬅️ 返回主菜单"
     echo ""
-    read -p "请输入选项 (0-4): " perm_choice
+    read -p "请输入选项 (0-3): " delete_choice
     
-    case $perm_choice in
+    case $delete_choice in
         1)
-            set_readonly_permissions
-            if [[ $? -eq 0 ]]; then
-                echo ""
-                echo "✅ 权限模式切换完成！"
-                echo "📋 当前权限状态："
-                show_current_permission_status
-                echo ""
-                read -p "按回车键返回主菜单..." -r
-            fi
+            delete_specific_file
             ;;
         2)
-            set_delete_permissions
-            if [[ $? -eq 0 ]]; then
-                echo ""
-                echo "✅ 权限模式切换完成！"
-                echo "📋 当前权限状态："
-                show_current_permission_status
-                echo ""
-                read -p "按回车键返回主菜单..." -r
-            fi
+            delete_old_files
             ;;
         3)
-            set_readwrite_permissions
-            if [[ $? -eq 0 ]]; then
-                echo ""
-                echo "✅ 权限模式切换完成！"
-                echo "📋 当前权限状态："
-                show_current_permission_status
-                echo ""
-                read -p "按回车键返回主菜单..." -r
-            fi
-            ;;
-        4)
-            show_permission_details
-            echo ""
-            read -p "按回车键返回主菜单..." -r
+            show_file_details
             ;;
         0)
             return 0
             ;;
         *)
             echo "❌ 无效选项"
-            sleep 1
             ;;
     esac
     
+    echo ""
+    read -p "按回车键返回主菜单..." -r
     return 0
 }
 
-# 显示当前权限状态
-show_current_permission_status() {
-    local ftp_home="/home/$FTP_USER/ftp"
+# 删除指定文件
+delete_specific_file() {
+    echo ""
+    echo "🗑️ 删除指定文件"
+    echo ""
+    read -p "请输入要删除的文件名: " filename
     
-    echo "   用户: $FTP_USER"
-    echo "   源目录: $SOURCE_DIR"
-    echo "   FTP目录: $ftp_home"
+    if [[ -z "$filename" ]]; then
+        echo "❌ 文件名不能为空"
+        return 1
+    fi
     
-    # 检查挂载状态
-    if mountpoint -q "$ftp_home" 2>/dev/null; then
-        local mount_info=$(mount | grep "$ftp_home" | tail -1)
-        if echo "$mount_info" | grep -q "(ro,"; then
-            echo "   挂载状态: ✅ 只读挂载"
+    local file_path="$SOURCE_DIR/$filename"
+    
+    if [[ ! -f "$file_path" ]]; then
+        echo "❌ 文件不存在: $filename"
+        return 1
+    fi
+    
+    # 检查是否为配置文件
+    if [[ "$filename" == config*.json || "$filename" == *.backup ]]; then
+        echo "❌ 配置文件受保护，不能删除: $filename"
+        echo "💡 受保护的文件类型："
+        echo "   • config*.json (配置文件)"
+        echo "   • *.backup (备份文件)"
+        return 1
+    fi
+    
+    echo "📄 文件信息："
+    echo "   名称: $filename"
+    echo "   大小: $(du -h "$file_path" | cut -f1)"
+    echo "   修改时间: $(stat -c %y "$file_path")"
+    echo ""
+    
+    read -p "确认删除此文件？(y/N): " confirm
+    confirm=${confirm:-n}
+    
+    if [[ "$confirm" == "y" || "$confirm" == "Y" ]]; then
+        if rm "$file_path"; then
+            echo "✅ 文件删除成功: $filename"
+            log_info "删除文件: $filename"
         else
-            echo "   挂载状态: ⚠️  读写挂载"
+            echo "❌ 文件删除失败: $filename"
+            return 1
         fi
     else
-        echo "   挂载状态: ❌ 未挂载"
+        echo "❌ 已取消删除"
+    fi
+}
+
+# 删除指定目录
+delete_specific_directory() {
+    echo ""
+    echo "🗑️ 删除指定目录"
+    echo ""
+    read -p "请输入要删除的目录名: " dirname
+    
+    if [[ -z "$dirname" ]]; then
+        echo "❌ 目录名不能为空"
+        return 1
     fi
     
-    # 检查目录权限
-    if [[ -d "$SOURCE_DIR" ]]; then
-        local dir_perms=$(stat -c %a "$SOURCE_DIR" 2>/dev/null)
-        echo "   目录权限: $dir_perms"
+    local dir_path="$SOURCE_DIR/$dirname"
+    
+    if [[ ! -d "$dir_path" ]]; then
+        echo "❌ 目录不存在: $dirname"
+        return 1
+    fi
+    
+    echo "📁 目录信息："
+    echo "   名称: $dirname"
+    echo "   大小: $(du -sh "$dir_path" | cut -f1)"
+    echo "   文件数量: $(find "$dir_path" -type f | wc -l)"
+    echo ""
+    
+    read -p "确认删除此目录及其所有内容？(y/N): " confirm
+    confirm=${confirm:-n}
+    
+    if [[ "$confirm" == "y" || "$confirm" == "Y" ]]; then
+        if rm -rf "$dir_path"; then
+            echo "✅ 目录删除成功: $dirname"
+            log_info "删除目录: $dirname"
+        else
+            echo "❌ 目录删除失败: $dirname"
+            return 1
+        fi
+    else
+        echo "❌ 已取消删除"
+    fi
+}
+
+# 删除3天前的文件
+delete_old_files() {
+    echo ""
+    echo "🗑️ 删除72小时前的文件"
+    echo ""
+    
+        # 查找72小时前的文件，排除配置文件（4320分钟 = 72小时）
+    local old_files=$(find "$SOURCE_DIR" -type f -mmin +4320 ! -name "config*.json" ! -name "*.backup" 2>/dev/null)
+    
+    if [[ -z "$old_files" ]]; then
+        echo "📭 没有找到72小时前的文件"
+        return 0
+    fi
+    
+    echo "📋 找到的72小时前文件："
+    local file_count=0
+    while IFS= read -r file; do
+        file_count=$((file_count + 1))
+        local file_size=$(du -h "$file" | cut -f1)
+        local file_date=$(stat -c %y "$file" | cut -d' ' -f1)
+        echo "   $file_count) $(basename "$file") (${file_size}, $file_date)"
+    done <<< "$old_files"
+    
+    echo ""
+    echo "📊 统计信息："
+    echo "   文件数量: $file_count"
+    
+    # 计算总大小
+    local total_size=$(find "$SOURCE_DIR" -type f -mmin +4320 ! -name "config*.json" ! -name "*.backup" -exec du -ch {} + 2>/dev/null | tail -1 | cut -f1)
+    
+    echo "   总大小: $total_size"
+    echo ""
+    
+    read -p "确认删除这些文件？(y/N): " confirm
+    confirm=${confirm:-n}
+    
+    if [[ "$confirm" == "y" || "$confirm" == "Y" ]]; then
+        echo "🗑️ 正在删除文件..."
         
-        # 检查文件权限
-        local test_file=$(find "$SOURCE_DIR" -type f 2>/dev/null | head -1)
-        if [[ -n "$test_file" ]]; then
-            local file_perm=$(stat -c %a "$test_file" 2>/dev/null)
-            echo "   文件权限: $file_perm"
-            
-            # 根据权限判断模式
-            if [[ "$file_perm" == "444" ]]; then
-                echo "   权限模式: 🔒 只读模式"
-            elif [[ "$file_perm" == "644" ]]; then
-                echo "   权限模式: ✏️ 读写模式"
-            else
-                echo "   权限模式: ❓ 未知模式"
-            fi
+        # 使用find命令直接删除
+        local deleted_files=$(find "$SOURCE_DIR" -type f -mmin +4320 ! -name "config*.json" ! -name "*.backup" -print -delete 2>/dev/null)
+        
+        if [[ -n "$deleted_files" ]]; then
+            local deleted_count=$(echo "$deleted_files" | wc -l)
+            echo "✅ 删除完成！共删除 $deleted_count 个文件"
+            echo "📋 已删除的文件："
+            echo "$deleted_files" | while read -r file; do
+                echo "   • $(basename "$file")"
+            done
+        else
+            echo "❌ 没有文件被删除"
         fi
+        log_info "批量删除72小时前文件: $deleted_count 个"
+    else
+        echo "❌ 已取消删除"
     fi
 }
 
-# 设置只读权限
-set_readonly_permissions() {
+# 显示文件详情
+show_file_details() {
     echo ""
-    echo "🔒 设置只读权限..."
+    echo "🔍 文件详情"
+    echo ""
+    read -p "请输入文件名: " filename
     
-    # 设置目录权限
-    chmod 755 "$SOURCE_DIR"
-    find "$SOURCE_DIR" -type d -exec chmod 755 {} \; 2>/dev/null || true
-    find "$SOURCE_DIR" -type f -exec chmod 444 {} \; 2>/dev/null || true
-    
-    # 重新挂载为只读
-    local ftp_home="/home/$FTP_USER/ftp"
-    if mountpoint -q "$ftp_home" 2>/dev/null; then
-        umount "$ftp_home" 2>/dev/null || true
-    fi
-    
-    if mount --bind -o ro "$SOURCE_DIR" "$ftp_home"; then
-        echo "✅ 只读权限设置成功"
-        echo "   • 文件不可修改"
-        echo "   • 文件不可删除"
-        echo "   • 保护录播文件安全"
-        echo "   • 挂载方式: bind mount (只读)"
-    else
-        echo "❌ 只读权限设置失败"
+    if [[ -z "$filename" ]]; then
+        echo "❌ 文件名不能为空"
         return 1
     fi
     
-    # 更新fstab
-    local fstab_entry="$SOURCE_DIR $ftp_home none bind,ro 0 0"
-    sed -i "\|$ftp_home|d" /etc/fstab 2>/dev/null || true
-    echo "$fstab_entry" >> /etc/fstab
+    local file_path="$SOURCE_DIR/$filename"
     
-    log_info "设置只读权限: $SOURCE_DIR"
-}
-
-# 设置删除权限
-set_delete_permissions() {
-    echo ""
-    echo "🗑️ 设置删除权限..."
-    echo "⚠️  警告：此模式允许FTP用户删除文件！"
-    echo ""
-    read -p "确认设置删除权限？(y/N): " confirm
-    confirm=${confirm:-n}
-    
-    if [[ "$confirm" != "y" && "$confirm" != "Y" ]]; then
-        echo "❌ 已取消"
-        return 0
-    fi
-    
-    # 设置目录权限
-    chmod 755 "$SOURCE_DIR"
-    find "$SOURCE_DIR" -type d -exec chmod 755 {} \; 2>/dev/null || true
-    find "$SOURCE_DIR" -type f -exec chmod 644 {} \; 2>/dev/null || true
-    
-    # 重新挂载为读写（允许删除）
-    local ftp_home="/home/$FTP_USER/ftp"
-    if mountpoint -q "$ftp_home" 2>/dev/null; then
-        umount "$ftp_home" 2>/dev/null || true
-    fi
-    
-    if mount --bind "$SOURCE_DIR" "$ftp_home"; then
-        echo "✅ 删除权限设置成功"
-        echo "   • 文件可删除"
-        echo "   • 文件不可修改"
-        echo "   • 目录可删除"
-        echo "   • 挂载方式: bind mount (读写)"
-    else
-        echo "❌ 删除权限设置失败"
+    if [[ ! -f "$file_path" ]]; then
+        echo "❌ 文件不存在: $filename"
         return 1
     fi
     
-    # 更新fstab
-    local fstab_entry="$SOURCE_DIR $ftp_home none bind 0 0"
-    sed -i "\|$ftp_home|d" /etc/fstab 2>/dev/null || true
-    echo "$fstab_entry" >> /etc/fstab
-    
-    log_info "设置删除权限: $SOURCE_DIR"
+    echo "📄 文件详情："
+    echo "   名称: $filename"
+    echo "   路径: $file_path"
+    echo "   大小: $(du -h "$file_path" | cut -f1)"
+    echo "   权限: $(stat -c %a "$file_path")"
+    echo "   所有者: $(stat -c %U:%G "$file_path")"
+    echo "   创建时间: $(stat -c %w "$file_path")"
+    echo "   修改时间: $(stat -c %y "$file_path")"
+    echo "   访问时间: $(stat -c %x "$file_path")"
 }
 
-# 设置读写权限
-set_readwrite_permissions() {
+# 定时任务管理
+cron_task_management() {
     echo ""
-    echo "✏️ 设置读写权限..."
-    echo "⚠️  警告：此模式允许FTP用户修改和删除文件！"
-    echo "⚠️  风险：可能导致录播文件损坏或丢失！"
-    echo ""
-    read -p "确认设置读写权限？(y/N): " confirm
-    confirm=${confirm:-n}
-    
-    if [[ "$confirm" != "y" && "$confirm" != "Y" ]]; then
-        echo "❌ 已取消"
-        return 0
-    fi
-    
-    # 设置目录权限
-    chmod 755 "$SOURCE_DIR"
-    find "$SOURCE_DIR" -type d -exec chmod 755 {} \; 2>/dev/null || true
-    find "$SOURCE_DIR" -type f -exec chmod 644 {} \; 2>/dev/null || true
-    
-    # 重新挂载为读写
-    local ftp_home="/home/$FTP_USER/ftp"
-    if mountpoint -q "$ftp_home" 2>/dev/null; then
-        umount "$ftp_home" 2>/dev/null || true
-    fi
-    
-    if mount --bind "$SOURCE_DIR" "$ftp_home"; then
-        echo "✅ 读写权限设置成功"
-        echo "   • 文件可修改"
-        echo "   • 文件可删除"
-        echo "   • 目录可修改"
-        echo "   • 挂载方式: bind mount (读写)"
-        echo "⚠️  请谨慎使用此模式"
-    else
-        echo "❌ 读写权限设置失败"
-        return 1
-    fi
-    
-    # 更新fstab
-    local fstab_entry="$SOURCE_DIR $ftp_home none bind 0 0"
-    sed -i "\|$ftp_home|d" /etc/fstab 2>/dev/null || true
-    echo "$fstab_entry" >> /etc/fstab
-    
-    log_info "设置读写权限: $SOURCE_DIR"
-}
-
-# 显示权限详情
-show_permission_details() {
-    echo ""
-    echo "🔍 权限详情："
     echo "======================================================"
+    echo "⏰ 定时任务管理"
+    echo "======================================================"
+    echo ""
     
-    if [[ -d "$SOURCE_DIR" ]]; then
-        echo "📁 源目录: $SOURCE_DIR"
-        echo "   权限: $(stat -c %a "$SOURCE_DIR" 2>/dev/null)"
-        echo "   所有者: $(stat -c %U:%G "$SOURCE_DIR" 2>/dev/null)"
+    echo "请选择操作："
+    echo "1) 📅 设置自动清理任务（保留72小时文件）"
+    echo "2) 🔍 查看当前定时任务"
+    echo "3) 🗑️ 删除定时任务"
+    echo "4) 🧪 测试清理功能"
+    echo "0) ⬅️ 返回主菜单"
+    echo ""
+    read -p "请输入选项 (0-4): " cron_choice
+    
+    case $cron_choice in
+        1)
+            setup_auto_cleanup_task
+            ;;
+        2)
+            show_cron_tasks
+            ;;
+        3)
+            remove_cron_task
+            ;;
+        4)
+            test_cleanup_function
+            ;;
+        0)
+            return 0
+            ;;
+        *)
+            echo "❌ 无效选项"
+            ;;
+    esac
+    
+    echo ""
+    read -p "按回车键返回主菜单..." -r
+    return 0
+}
+
+# 设置自动清理任务
+setup_auto_cleanup_task() {
+    echo ""
+    echo "📅 设置自动清理任务（72小时）"
+    echo ""
+    
+    # 检查是否已存在任务
+    if crontab -l 2>/dev/null | grep -q "cleanup_old_files"; then
+        echo "⚠️ 已存在自动清理任务"
         echo ""
-        
-        # 检查挂载状态
-        local ftp_home="/home/$FTP_USER/ftp"
-        if mountpoint -q "$ftp_home" 2>/dev/null; then
-            echo "🔗 挂载状态: 已挂载"
-            local mount_info=$(mount | grep "$ftp_home" | tail -1)
-            if echo "$mount_info" | grep -q "(ro,"; then
-                echo "   模式: 只读"
-            else
-                echo "   模式: 读写"
-            fi
-        else
-            echo "🔗 挂载状态: 未挂载"
+        read -p "是否重新设置？(y/N): " confirm
+        confirm=${confirm:-n}
+        if [[ "$confirm" != "y" && "$confirm" != "Y" ]]; then
+            echo "❌ 已取消"
+            return 0
         fi
+    fi
+    
+    echo "请选择清理时间："
+    echo "1) 每天凌晨2点"
+    echo "2) 每天凌晨3点"
+    echo "3) 每天凌晨4点"
+    echo "4) 自定义时间"
+    echo ""
+    read -p "请输入选项 (1-4): " time_choice
+    
+    local cron_time=""
+    case $time_choice in
+        1)
+            cron_time="0 2 * * *"
+            ;;
+        2)
+            cron_time="0 3 * * *"
+            ;;
+        3)
+            cron_time="0 4 * * *"
+            ;;
+        4)
+            echo ""
+            echo "请输入自定义时间（格式：分 时 日 月 周）"
+            echo "例如：0 2 * * * 表示每天凌晨2点"
+            read -p "时间: " cron_time
+            ;;
+        *)
+            echo "❌ 无效选项"
+            return 1
+            ;;
+    esac
+    
+    # 创建清理脚本
+    local cleanup_script="/usr/local/bin/cleanup_old_files.sh"
+    cat > "$cleanup_script" <<EOF
+#!/bin/bash
+# 自动清理3天前的录播文件
+# 创建时间: $(date)
+
+SOURCE_DIR="/opt/brec/file"
+LOG_FILE="/var/log/cleanup_old_files.log"
+
+# 记录开始时间
+echo "\$(date '+%Y-%m-%d %H:%M:%S') - 开始清理任务" >> "\$LOG_FILE"
+
+# 查找并删除72小时前的文件（排除配置文件）
+echo "\$(date '+%Y-%m-%d %H:%M:%S') - 开始清理任务" >> "\$LOG_FILE"
+
+# 使用find命令直接删除，4320分钟 = 72小时
+find "\$SOURCE_DIR" -type f -mmin +4320 ! -name "config*.json" ! -name "*.backup" -print -delete >> "\$LOG_FILE" 2>&1
+
+echo "\$(date '+%Y-%m-%d %H:%M:%S') - 清理任务完成" >> "\$LOG_FILE"
+EOF
+    
+    chmod +x "$cleanup_script"
+    
+    # 添加到crontab
+    (crontab -l 2>/dev/null | grep -v "cleanup_old_files"; echo "$cron_time $cleanup_script") | crontab -
+    
+    echo ""
+    echo "✅ 自动清理任务设置成功！"
+    echo "   清理时间: $cron_time"
+    echo "   清理脚本: $cleanup_script"
+    echo "   日志文件: /var/log/cleanup_old_files.log"
+    echo ""
+    echo "💡 任务说明："
+    echo "   • 自动删除72小时前的录播文件"
+    echo "   • 每天自动执行一次"
+    echo "   • 操作记录在日志文件中"
+    echo "   • 保护配置文件不被删除"
+    
+    log_info "设置自动清理任务: $cron_time"
+}
+
+# 查看当前定时任务
+show_cron_tasks() {
+    echo ""
+    echo "🔍 当前定时任务"
+    echo ""
+    
+    local cleanup_tasks=$(crontab -l 2>/dev/null | grep "cleanup_old_files")
+    
+    if [[ -n "$cleanup_tasks" ]]; then
+        echo "📋 自动清理任务："
+        while IFS= read -r task; do
+            echo "   $task"
+        done <<< "$cleanup_tasks"
         echo ""
         
-        # 显示文件权限示例
-        echo "📄 文件权限示例："
-        local files=$(find "$SOURCE_DIR" -type f 2>/dev/null | head -3)
-        if [[ -n "$files" ]]; then
-            while IFS= read -r file; do
-                echo "   $(basename "$file"): $(stat -c %a "$file" 2>/dev/null)"
-            done <<< "$files"
+        # 显示日志
+        if [[ -f "/var/log/cleanup_old_files.log" ]]; then
+            echo "📄 最近日志："
+            tail -5 "/var/log/cleanup_old_files.log" | while IFS= read -r line; do
+                echo "   $line"
+            done
         else
-            echo "   暂无文件"
-        fi
-        echo ""
-        
-        # 显示目录权限示例
-        echo "📂 目录权限示例："
-        local dirs=$(find "$SOURCE_DIR" -type d 2>/dev/null | head -3)
-        if [[ -n "$dirs" ]]; then
-            while IFS= read -r dir; do
-                echo "   $(basename "$dir"): $(stat -c %a "$dir" 2>/dev/null)"
-            done <<< "$dirs"
-        else
-            echo "   暂无目录"
+            echo "📄 日志文件: 暂无"
         fi
     else
-        echo "❌ 源目录不存在: $SOURCE_DIR"
+        echo "📭 暂无自动清理任务"
     fi
+}
+
+# 删除定时任务
+remove_cron_task() {
+    echo ""
+    echo "🗑️ 删除定时任务"
+    echo ""
+    
+    if crontab -l 2>/dev/null | grep -q "cleanup_old_files"; then
+        read -p "确认删除自动清理任务？(y/N): " confirm
+        confirm=${confirm:-n}
+        
+        if [[ "$confirm" == "y" || "$confirm" == "Y" ]]; then
+            # 删除crontab中的任务
+            crontab -l 2>/dev/null | grep -v "cleanup_old_files" | crontab -
+            
+            # 删除清理脚本
+            rm -f "/usr/local/bin/cleanup_old_files.sh"
+            
+            echo "✅ 自动清理任务已删除"
+            log_info "删除自动清理任务"
+        else
+            echo "❌ 已取消"
+        fi
+    else
+        echo "📭 没有找到自动清理任务"
+    fi
+}
+
+# 测试清理功能
+test_cleanup_function() {
+    echo ""
+    echo "🧪 测试清理功能（72小时）"
+    echo ""
+    
+        # 查找72小时前的文件（排除配置文件）（4320分钟 = 72小时）
+    local old_files=$(find "$SOURCE_DIR" -type f -mmin +4320 ! -name "config*.json" ! -name "*.backup" 2>/dev/null)
+    
+    if [[ -z "$old_files" ]]; then
+        echo "📭 没有找到72小时前的文件"
+        echo "💡 可以创建一些测试文件来验证功能"
+        return 0
+    fi
+    
+    echo "📋 找到的72小时前文件："
+    local file_count=0
+    while IFS= read -r file; do
+        file_count=$((file_count + 1))
+        local file_size=$(du -h "$file" | cut -f1)
+        local file_date=$(stat -c %y "$file" | cut -d' ' -f1)
+        echo "   $file_count) $(basename "$file") (${file_size}, $file_date)"
+    done <<< "$old_files"
+    
+    echo ""
+    echo "📊 统计信息："
+    echo "   文件数量: $file_count"
+    
+    # 计算总大小
+    local total_size=$(find "$SOURCE_DIR" -type f -mmin +4320 ! -name "config*.json" ! -name "*.backup" -exec du -ch {} + 2>/dev/null | tail -1 | cut -f1)
+    
+    echo "   总大小: $total_size"
+    echo ""
+    echo "💡 这是测试模式，不会实际删除文件"
+    echo "   如需删除，请使用删除文件功能"
+    echo "   清理规则：删除72小时前的文件"
 }
 
 # 检查脚本更新
@@ -1780,14 +1927,15 @@ main_menu() {
         echo "5) 👥 FTP用户管理"
         echo "6) 🧪 实时性测试"
         echo "7) 🔗 挂载文件映射"
-        echo "8) 🔒 权限管理 (只读/删除权限)"
-        echo "9) 🔄 检查脚本更新"
-        echo "10) 🗑️ 卸载FTP服务"
+        echo "8) 🗑️ 删除文件功能"
+        echo "9) ⏰ 定时任务管理"
+        echo "10) 🔄 检查脚本更新"
+        echo "11) 🗑️ 卸载FTP服务"
         echo "0) 退出"
         echo ""
         echo "📝 快捷键： Ctrl+C 快速退出"
         echo ""
-        read -p "请输入选项 (0-10): " choice
+        read -p "请输入选项 (0-11): " choice
         
         case $choice in
             1)
@@ -1822,13 +1970,16 @@ main_menu() {
                 read -p "按回车键返回主菜单..." -r
                 ;;
             8)
-                permission_management_menu
+                delete_file_function
                 ;;
             9)
+                cron_task_management
+                ;;
+            10)
                 check_script_update
                 read -p "按回车键返回主菜单..." -r
                 ;;
-            10)
+            11)
                 uninstall_ftp_service
                 read -p "按回车键返回主菜单..." -r
                 ;;
