@@ -599,10 +599,31 @@ check_service_status() {
     fi
     
     # 检查端口监听
+    local port_listening=false
+    
+    # 方法1: 使用netstat检查
     if netstat -tlnp 2>/dev/null | grep -q ":21 "; then
+        port_listening=true
+    fi
+    
+    # 方法2: 使用lsof检查
+    if lsof -i :21 2>/dev/null | grep -q "LISTEN"; then
+        port_listening=true
+    fi
+    
+    # 方法3: 使用ss检查
+    if ss -tlnp 2>/dev/null | grep -q ":21 "; then
+        port_listening=true
+    fi
+    
+    if [[ "$port_listening" == "true" ]]; then
         echo "✅ FTP端口21监听正常"
     else
         echo "❌ FTP端口21未监听"
+        echo "💡 详细检查："
+        echo "   netstat结果: $(netstat -tlnp 2>/dev/null | grep :21 || echo '无')"
+        echo "   lsof结果: $(lsof -i :21 2>/dev/null || echo '无')"
+        echo "   ss结果: $(ss -tlnp 2>/dev/null | grep :21 || echo '无')"
         return 1
     fi
     
