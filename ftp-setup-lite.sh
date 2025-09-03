@@ -8,7 +8,7 @@
 set -o pipefail
 
 # 全局配置
-readonly SCRIPT_VERSION="v1.1.7"
+readonly SCRIPT_VERSION="v1.1.8"
 readonly LOG_FILE="/var/log/brce_ftp_lite.log"
 SOURCE_DIR="/opt/brec/file"
 FTP_USER=""
@@ -464,6 +464,8 @@ local_enable=YES
 write_enable=YES
 chroot_local_user=YES
 allow_writeable_chroot=YES
+# 允许删除操作
+delete_failed_uploads=YES
 local_root=$ftp_home
 pasv_enable=YES
 pasv_min_port=40000
@@ -1536,9 +1538,9 @@ set_delete_permissions() {
     # 设置目录权限
     chmod 755 "$SOURCE_DIR"
     find "$SOURCE_DIR" -type d -exec chmod 755 {} \; 2>/dev/null || true
-    find "$SOURCE_DIR" -type f -exec chmod 444 {} \; 2>/dev/null || true
+    find "$SOURCE_DIR" -type f -exec chmod 644 {} \; 2>/dev/null || true
     
-    # 重新挂载为读写（但文件权限限制修改）
+    # 重新挂载为读写（允许删除）
     local ftp_home="/home/$FTP_USER/ftp"
     if mountpoint -q "$ftp_home" 2>/dev/null; then
         umount "$ftp_home" 2>/dev/null || true
