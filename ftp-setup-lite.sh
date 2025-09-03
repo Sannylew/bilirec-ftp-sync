@@ -8,7 +8,7 @@
 set -o pipefail
 
 # 全局配置
-readonly SCRIPT_VERSION="v1.2.5"
+readonly SCRIPT_VERSION="v1.2.6"
 readonly LOG_FILE="/var/log/brce_ftp_lite.log"
 SOURCE_DIR="/opt/brec/file"
 FTP_USER=""
@@ -1633,6 +1633,35 @@ setup_auto_cleanup_task() {
     echo "📅 设置自动清理任务（72小时）"
     echo ""
     
+    # 检查cron服务是否安装
+    if ! command -v crontab &> /dev/null; then
+        echo "❌ 系统未安装cron服务"
+        echo ""
+        echo "🔧 正在安装cron服务..."
+        
+        # 检测系统类型并安装cron
+        if command -v apt-get &> /dev/null; then
+            apt-get update && apt-get install -y cron
+        elif command -v yum &> /dev/null; then
+            yum install -y cronie
+        elif command -v dnf &> /dev/null; then
+            dnf install -y cronie
+        else
+            echo "❌ 无法自动安装cron服务，请手动安装："
+            echo "   Ubuntu/Debian: apt-get install cron"
+            echo "   CentOS/RHEL: yum install cronie"
+            echo "   Fedora: dnf install cronie"
+            return 1
+        fi
+        
+        # 启动cron服务
+        systemctl enable cron 2>/dev/null || systemctl enable crond 2>/dev/null || true
+        systemctl start cron 2>/dev/null || systemctl start crond 2>/dev/null || true
+        
+        echo "✅ cron服务安装完成"
+        echo ""
+    fi
+    
     # 检查是否已存在任务
     if crontab -l 2>/dev/null | grep -q "cleanup_old_files"; then
         echo "⚠️ 已存在自动清理任务"
@@ -1701,7 +1730,12 @@ EOF
     chmod +x "$cleanup_script"
     
     # 添加到crontab
-    (crontab -l 2>/dev/null | grep -v "cleanup_old_files"; echo "$cron_time $cleanup_script") | crontab -
+    if (crontab -l 2>/dev/null | grep -v "cleanup_old_files"; echo "$cron_time $cleanup_script") | crontab -; then
+        echo "✅ 定时任务添加成功"
+    else
+        echo "❌ 定时任务添加失败"
+        return 1
+    fi
     
     echo ""
     echo "✅ 自动清理任务设置成功！"
@@ -1723,6 +1757,15 @@ show_cron_tasks() {
     echo ""
     echo "🔍 当前定时任务"
     echo ""
+    
+    # 检查cron服务是否可用
+    if ! command -v crontab &> /dev/null; then
+        echo "❌ cron服务未安装或不可用"
+        echo "💡 请先安装cron服务："
+        echo "   Ubuntu/Debian: apt-get install cron"
+        echo "   CentOS/RHEL: yum install cronie"
+        return 1
+    fi
     
     local cleanup_tasks=$(crontab -l 2>/dev/null | grep "cleanup_old_files")
     
@@ -1752,6 +1795,13 @@ remove_cron_task() {
     echo ""
     echo "🗑️ 删除定时任务"
     echo ""
+    
+    # 检查cron服务是否可用
+    if ! command -v crontab &> /dev/null; then
+        echo "❌ cron服务未安装或不可用"
+        echo "💡 请先安装cron服务"
+        return 1
+    fi
     
     if crontab -l 2>/dev/null | grep -q "cleanup_old_files"; then
         read -p "确认删除自动清理任务？(y/N): " confirm
