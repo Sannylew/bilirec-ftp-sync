@@ -8,7 +8,7 @@
 set -o pipefail
 
 # 全局配置
-readonly SCRIPT_VERSION="v1.2.6"
+readonly SCRIPT_VERSION="v1.2.7"
 readonly LOG_FILE="/var/log/brce_ftp_lite.log"
 SOURCE_DIR="/opt/brec/file"
 FTP_USER=""
@@ -1740,11 +1740,13 @@ EOF
     echo ""
     echo "✅ 自动清理任务设置成功！"
     echo "   清理时间: $cron_time"
+    echo "   清理路径: $SOURCE_DIR"
     echo "   清理脚本: $cleanup_script"
     echo "   日志文件: /var/log/cleanup_old_files.log"
     echo ""
     echo "💡 任务说明："
     echo "   • 自动删除72小时前的录播文件"
+    echo "   • 清理目录: $SOURCE_DIR"
     echo "   • 每天自动执行一次"
     echo "   • 操作记录在日志文件中"
     echo "   • 保护配置文件不被删除"
@@ -1774,6 +1776,10 @@ show_cron_tasks() {
         while IFS= read -r task; do
             echo "   $task"
         done <<< "$cleanup_tasks"
+        echo ""
+        echo "📁 清理路径: $SOURCE_DIR"
+        echo "⏰ 清理规则: 删除72小时前的文件"
+        echo "🛡️ 保护文件: config*.json, *.backup"
         echo ""
         
         # 显示日志
