@@ -8,7 +8,7 @@
 set -o pipefail
 
 # 全局配置
-readonly SCRIPT_VERSION="v1.1.2"
+readonly SCRIPT_VERSION="v1.1.4"
 readonly LOG_FILE="/var/log/brce_ftp_lite.log"
 SOURCE_DIR="/opt/brec/file"
 FTP_USER=""
@@ -484,10 +484,22 @@ local_umask=022
 # 禁用缓存，确保实时性
 ls_recurse_enable=NO
 use_sendfile=NO
+# 针对openlist的优化配置
+# 保持默认配置，主要优化在openlist端
 EOF
 
     echo "✅ vsftpd配置生成完成"
     log_info "vsftpd配置文件已生成"
+    
+    # 显示openlist优化建议
+    echo ""
+    echo "💡 openlist缓存优化建议："
+    echo "   1. 在openlist管理界面中设置："
+    echo "      • 缓存过期时间: 1-5分钟"
+    echo "      • 或设置为: 0.5 (30秒)"
+    echo "   2. 避免使用永久缓存 (设置为0)"
+    echo "   3. 定期刷新存储列表"
+    
     return 0
 }
 
@@ -1440,7 +1452,7 @@ show_current_permission_status() {
     # 检查挂载状态
     if mountpoint -q "$ftp_home" 2>/dev/null; then
         local mount_info=$(mount | grep "$ftp_home" | head -1)
-        if echo "$mount_info" | grep -q "ro,"; then
+        if echo "$mount_info" | grep -q "(ro,"; then
             echo "   挂载状态: ✅ 只读挂载"
         else
             echo "   挂载状态: ⚠️  读写挂载"
@@ -1614,7 +1626,7 @@ show_permission_details() {
         if mountpoint -q "$ftp_home" 2>/dev/null; then
             echo "🔗 挂载状态: 已挂载"
             local mount_info=$(mount | grep "$ftp_home")
-            if echo "$mount_info" | grep -q "ro"; then
+            if echo "$mount_info" | grep -q "(ro,"; then
                 echo "   模式: 只读"
             else
                 echo "   模式: 读写"
