@@ -8,7 +8,7 @@
 set -o pipefail
 
 # 全局配置
-readonly SCRIPT_VERSION="v1.0.0"
+readonly SCRIPT_VERSION="v1.0.1"
 readonly LOG_FILE="/var/log/brce_ftp_lite.log"
 SOURCE_DIR="/opt/brec/file"
 FTP_USER=""
@@ -137,6 +137,58 @@ check_source_directory() {
     return 0
 }
 
+# 检查端口可用性
+check_port_availability() {
+    local port="$1"
+    local service_name="$2"
+    
+    echo "🔍 检查端口 $port 可用性..."
+    
+    # 检查端口是否被占用
+    if netstat -tlnp 2>/dev/null | grep -q ":$port "; then
+        echo "❌ 端口 $port 已被占用"
+        echo "💡 占用进程信息："
+        netstat -tlnp 2>/dev/null | grep ":$port " | head -3
+        echo ""
+        echo "🔧 解决方案："
+        echo "   1) 停止占用端口的服务"
+        echo "   2) 修改FTP端口配置"
+        echo "   3) 使用其他端口"
+        echo ""
+        read -p "是否继续安装？(y/n，默认 n): " continue_install
+        continue_install=${continue_install:-n}
+        
+        if [[ "$continue_install" != "y" ]]; then
+            echo "❌ 安装已取消"
+            return 1
+        fi
+    else
+        echo "✅ 端口 $port 可用"
+    fi
+    
+    # 检查防火墙状态
+    if command -v ufw &> /dev/null; then
+        if ufw status | grep -q "Status: active"; then
+            echo "⚠️  检测到防火墙已启用"
+            echo "💡 建议开放FTP端口："
+            echo "   sudo ufw allow 21/tcp"
+            echo "   sudo ufw allow 40000:40100/tcp"
+            echo ""
+            read -p "是否自动开放FTP端口？(y/n，默认 y): " open_ports
+            open_ports=${open_ports:-y}
+            
+            if [[ "$open_ports" == "y" ]]; then
+                echo "🔓 开放FTP端口..."
+                ufw allow 21/tcp 2>/dev/null || true
+                ufw allow 40000:40100/tcp 2>/dev/null || true
+                echo "✅ FTP端口已开放"
+            fi
+        fi
+    fi
+    
+    return 0
+}
+
 # 安装依赖包
 install_dependencies() {
     echo ""
@@ -144,6 +196,11 @@ install_dependencies() {
     echo "📦 安装依赖包"
     echo "======================================================"
     echo ""
+    
+    # 检查端口可用性
+    if ! check_port_availability "21" "FTP"; then
+        return 1
+    fi
     
     log_info "检测包管理器并安装vsftpd..."
     
@@ -1019,6 +1076,94 @@ uninstall_ftp_service() {
     return 0
 }
 
+# 检查脚本更新
+check_script_update() {
+    echo ""
+    echo "======================================================"
+    echo "🔄 检查脚本更新"
+    echo "======================================================"
+    echo ""
+    
+    local script_name="ftp-setup-lite.sh"
+    local github_url="https://raw.githubusercontent.com/Sannylew/bilirec-ftp-sync/main/$script_name"
+    local temp_file="/tmp/$script_name.new"
+    
+    echo "🔍 检查远程版本..."
+    
+    # 检查网络连接
+    if ! curl -s --connect-timeout 10 "$github_url" > /dev/null; then
+        echo "❌ 无法连接到GitHub，请检查网络连接"
+        return 1
+    fi
+    
+    # 下载远程版本
+    if curl -s --connect-timeout 10 "$github_url" -o "$temp_file"; then
+        echo "✅ 远程版本下载成功"
+    else
+        echo "❌ 下载远程版本失败"
+        return 1
+    fi
+    
+    # 比较版本
+    local remote_version=$(grep "readonly SCRIPT_VERSION=" "$temp_file" 2>/dev/null | cut -d'"' -f2)
+    local current_version="$SCRIPT_VERSION"
+    
+    echo "   当前版本: $current_version"
+    echo "   远程版本: $remote_version"
+    
+    if [[ "$remote_version" == "$current_version" ]]; then
+        echo "✅ 已是最新版本"
+        rm -f "$temp_file"
+        return 0
+    fi
+    
+    echo ""
+    echo "🆕 发现新版本: $remote_version"
+    echo "💡 更新内容："
+    echo "   • 修复端口检查功能"
+    echo "   • 添加脚本自动更新"
+    echo "   • 改进错误处理"
+    echo ""
+    
+    read -p "是否更新到最新版本？(y/n，默认 y): " update_confirm
+    update_confirm=${update_confirm:-y}
+    
+    if [[ "$update_confirm" == "y" ]]; then
+        echo "🔄 正在更新脚本..."
+        
+        # 备份当前脚本
+        local backup_file="$script_name.backup.$(date +%Y%m%d_%H%M%S)"
+        cp "$script_name" "$backup_file"
+        echo "✅ 当前脚本已备份: $backup_file"
+        
+        # 替换脚本
+        if cp "$temp_file" "$script_name"; then
+            chmod +x "$script_name"
+            echo "✅ 脚本更新成功"
+            echo ""
+            echo "🎉 更新完成！"
+            echo "💡 建议重新运行脚本以使用新功能"
+            echo ""
+            read -p "是否立即重新运行脚本？(y/n，默认 n): " restart_script
+            restart_script=${restart_script:-n}
+            
+            if [[ "$restart_script" == "y" ]]; then
+                echo "🔄 重新启动脚本..."
+                exec "$0" "$@"
+            fi
+        else
+            echo "❌ 脚本更新失败"
+            echo "💡 请手动更新或联系技术支持"
+            return 1
+        fi
+    else
+        echo "❌ 更新已取消"
+    fi
+    
+    rm -f "$temp_file"
+    return 0
+}
+
 # 主菜单
 main_menu() {
     while true; do
@@ -1034,12 +1179,13 @@ main_menu() {
         echo "4) ⏹️ 停止FTP服务"
         echo "5) 👥 FTP用户管理"
         echo "6) 🧪 实时性测试"
-        echo "7) 🗑️ 卸载FTP服务"
+        echo "7) 🔄 检查脚本更新"
+        echo "8) 🗑️ 卸载FTP服务"
         echo "0) 退出"
         echo ""
         echo "📝 快捷键： Ctrl+C 快速退出"
         echo ""
-        read -p "请输入选项 (0-7): " choice
+        read -p "请输入选项 (0-8): " choice
         
         case $choice in
             1)
@@ -1070,6 +1216,10 @@ main_menu() {
                 read -p "按回车键返回主菜单..." -r
                 ;;
             7)
+                check_script_update
+                read -p "按回车键返回主菜单..." -r
+                ;;
+            8)
                 uninstall_ftp_service
                 read -p "按回车键返回主菜单..." -r
                 ;;
@@ -1141,6 +1291,12 @@ install_ftp_service() {
 # 主程序入口
 main() {
     init_script
+    
+    # 检查脚本更新（可选）
+    if [[ "$1" == "--check-update" ]]; then
+        check_script_update
+        return 0
+    fi
     
     # 检查是否已安装
     if systemctl is-active --quiet vsftpd 2>/dev/null; then
