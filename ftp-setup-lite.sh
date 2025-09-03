@@ -1,14 +1,14 @@
 #!/bin/bash
 
 # BRCE FTP 精简版配置脚本
-# 版本: v1.0.3 - 文件映射版本
+# 版本: v1.1.0 - 文件映射版本
 # 专为录播姬设计的轻量级FTP服务，使用bind mount映射
 
 # 部分严格模式 - 避免交互过程中意外退出
 set -o pipefail
 
 # 全局配置
-readonly SCRIPT_VERSION="v1.0.3"
+readonly SCRIPT_VERSION="v1.1.0"
 readonly LOG_FILE="/var/log/brce_ftp_lite.log"
 SOURCE_DIR="/opt/brec/file"
 FTP_USER=""
@@ -1324,6 +1324,260 @@ mount_bind_mount_menu() {
     return 0
 }
 
+# 权限管理菜单
+permission_management_menu() {
+    echo ""
+    echo "======================================================"
+    echo "🔒 权限管理"
+    echo "======================================================"
+    echo ""
+    
+    # 自动检测FTP用户
+    if [[ -z "$FTP_USER" ]]; then
+        echo "🔍 自动检测FTP用户..."
+        for user in $(getent passwd | cut -d: -f1); do
+            if [[ -d "/home/$user/ftp" ]]; then
+                FTP_USER="$user"
+                echo "✅ 检测到FTP用户: $FTP_USER"
+                break
+            fi
+        done
+        
+        if [[ -z "$FTP_USER" ]]; then
+            echo "❌ 未检测到FTP用户"
+            echo "💡 请先安装FTP服务"
+            return 1
+        fi
+    fi
+    
+    echo "📋 当前权限状态："
+    echo "   用户: $FTP_USER"
+    echo "   源目录: $SOURCE_DIR"
+    echo ""
+    
+    # 检查当前权限
+    if [[ -d "$SOURCE_DIR" ]]; then
+        local file_perms=$(stat -c %a "$SOURCE_DIR" 2>/dev/null)
+        echo "   目录权限: $file_perms"
+        
+        # 检查文件权限
+        local test_file=$(find "$SOURCE_DIR" -type f 2>/dev/null | head -1)
+        if [[ -n "$test_file" ]]; then
+            local file_perm=$(stat -c %a "$test_file" 2>/dev/null)
+            echo "   文件权限: $file_perm"
+        fi
+    fi
+    
+    echo ""
+    echo "请选择权限模式："
+    echo "1) 🔒 只读模式 (推荐，安全)"
+    echo "2) 🗑️ 删除权限模式 (可删除文件)"
+    echo "3) ✏️ 读写权限模式 (可修改文件)"
+    echo "4) 🔍 查看当前权限详情"
+    echo "0) ⬅️ 返回主菜单"
+    echo ""
+    read -p "请输入选项 (0-4): " perm_choice
+    
+    case $perm_choice in
+        1)
+            set_readonly_permissions
+            ;;
+        2)
+            set_delete_permissions
+            ;;
+        3)
+            set_readwrite_permissions
+            ;;
+        4)
+            show_permission_details
+            ;;
+        0)
+            return 0
+            ;;
+        *)
+            echo "❌ 无效选项"
+            ;;
+    esac
+    
+    return 0
+}
+
+# 设置只读权限
+set_readonly_permissions() {
+    echo ""
+    echo "🔒 设置只读权限..."
+    
+    # 设置目录权限
+    chmod 755 "$SOURCE_DIR"
+    find "$SOURCE_DIR" -type d -exec chmod 755 {} \; 2>/dev/null || true
+    find "$SOURCE_DIR" -type f -exec chmod 444 {} \; 2>/dev/null || true
+    
+    # 重新挂载为只读
+    local ftp_home="/home/$FTP_USER/ftp"
+    if mountpoint -q "$ftp_home" 2>/dev/null; then
+        umount "$ftp_home" 2>/dev/null || true
+    fi
+    
+    if mount --bind -o ro "$SOURCE_DIR" "$ftp_home"; then
+        echo "✅ 只读权限设置成功"
+        echo "   • 文件不可修改"
+        echo "   • 文件不可删除"
+        echo "   • 保护录播文件安全"
+    else
+        echo "❌ 只读权限设置失败"
+        return 1
+    fi
+    
+    # 更新fstab
+    local fstab_entry="$SOURCE_DIR $ftp_home none bind,ro 0 0"
+    sed -i "\|$ftp_home|d" /etc/fstab 2>/dev/null || true
+    echo "$fstab_entry" >> /etc/fstab
+    
+    log_info "设置只读权限: $SOURCE_DIR"
+}
+
+# 设置删除权限
+set_delete_permissions() {
+    echo ""
+    echo "🗑️ 设置删除权限..."
+    echo "⚠️  警告：此模式允许FTP用户删除文件！"
+    echo ""
+    read -p "确认设置删除权限？(y/N): " confirm
+    confirm=${confirm:-n}
+    
+    if [[ "$confirm" != "y" && "$confirm" != "Y" ]]; then
+        echo "❌ 已取消"
+        return 0
+    fi
+    
+    # 设置目录权限
+    chmod 755 "$SOURCE_DIR"
+    find "$SOURCE_DIR" -type d -exec chmod 755 {} \; 2>/dev/null || true
+    find "$SOURCE_DIR" -type f -exec chmod 444 {} \; 2>/dev/null || true
+    
+    # 重新挂载为读写（但文件权限限制修改）
+    local ftp_home="/home/$FTP_USER/ftp"
+    if mountpoint -q "$ftp_home" 2>/dev/null; then
+        umount "$ftp_home" 2>/dev/null || true
+    fi
+    
+    if mount --bind "$SOURCE_DIR" "$ftp_home"; then
+        echo "✅ 删除权限设置成功"
+        echo "   • 文件可删除"
+        echo "   • 文件不可修改"
+        echo "   • 目录可删除"
+    else
+        echo "❌ 删除权限设置失败"
+        return 1
+    fi
+    
+    # 更新fstab
+    local fstab_entry="$SOURCE_DIR $ftp_home none bind 0 0"
+    sed -i "\|$ftp_home|d" /etc/fstab 2>/dev/null || true
+    echo "$fstab_entry" >> /etc/fstab
+    
+    log_info "设置删除权限: $SOURCE_DIR"
+}
+
+# 设置读写权限
+set_readwrite_permissions() {
+    echo ""
+    echo "✏️ 设置读写权限..."
+    echo "⚠️  警告：此模式允许FTP用户修改和删除文件！"
+    echo "⚠️  风险：可能导致录播文件损坏或丢失！"
+    echo ""
+    read -p "确认设置读写权限？(y/N): " confirm
+    confirm=${confirm:-n}
+    
+    if [[ "$confirm" != "y" && "$confirm" != "Y" ]]; then
+        echo "❌ 已取消"
+        return 0
+    fi
+    
+    # 设置目录权限
+    chmod 755 "$SOURCE_DIR"
+    find "$SOURCE_DIR" -type d -exec chmod 755 {} \; 2>/dev/null || true
+    find "$SOURCE_DIR" -type f -exec chmod 644 {} \; 2>/dev/null || true
+    
+    # 重新挂载为读写
+    local ftp_home="/home/$FTP_USER/ftp"
+    if mountpoint -q "$ftp_home" 2>/dev/null; then
+        umount "$ftp_home" 2>/dev/null || true
+    fi
+    
+    if mount --bind "$SOURCE_DIR" "$ftp_home"; then
+        echo "✅ 读写权限设置成功"
+        echo "   • 文件可修改"
+        echo "   • 文件可删除"
+        echo "   • 目录可修改"
+        echo "⚠️  请谨慎使用此模式"
+    else
+        echo "❌ 读写权限设置失败"
+        return 1
+    fi
+    
+    # 更新fstab
+    local fstab_entry="$SOURCE_DIR $ftp_home none bind 0 0"
+    sed -i "\|$ftp_home|d" /etc/fstab 2>/dev/null || true
+    echo "$fstab_entry" >> /etc/fstab
+    
+    log_info "设置读写权限: $SOURCE_DIR"
+}
+
+# 显示权限详情
+show_permission_details() {
+    echo ""
+    echo "🔍 权限详情："
+    echo "======================================================"
+    
+    if [[ -d "$SOURCE_DIR" ]]; then
+        echo "📁 源目录: $SOURCE_DIR"
+        echo "   权限: $(stat -c %a "$SOURCE_DIR" 2>/dev/null)"
+        echo "   所有者: $(stat -c %U:%G "$SOURCE_DIR" 2>/dev/null)"
+        echo ""
+        
+        # 检查挂载状态
+        local ftp_home="/home/$FTP_USER/ftp"
+        if mountpoint -q "$ftp_home" 2>/dev/null; then
+            echo "🔗 挂载状态: 已挂载"
+            local mount_info=$(mount | grep "$ftp_home")
+            if echo "$mount_info" | grep -q "ro"; then
+                echo "   模式: 只读"
+            else
+                echo "   模式: 读写"
+            fi
+        else
+            echo "🔗 挂载状态: 未挂载"
+        fi
+        echo ""
+        
+        # 显示文件权限示例
+        echo "📄 文件权限示例："
+        local files=$(find "$SOURCE_DIR" -type f 2>/dev/null | head -3)
+        if [[ -n "$files" ]]; then
+            while IFS= read -r file; do
+                echo "   $(basename "$file"): $(stat -c %a "$file" 2>/dev/null)"
+            done <<< "$files"
+        else
+            echo "   暂无文件"
+        fi
+        echo ""
+        
+        # 显示目录权限示例
+        echo "📂 目录权限示例："
+        local dirs=$(find "$SOURCE_DIR" -type d 2>/dev/null | head -3)
+        if [[ -n "$dirs" ]]; then
+            while IFS= read -r dir; do
+                echo "   $(basename "$dir"): $(stat -c %a "$dir" 2>/dev/null)"
+            done <<< "$dirs"
+        else
+            echo "   暂无目录"
+        fi
+    else
+        echo "❌ 源目录不存在: $SOURCE_DIR"
+    fi
+}
+
 # 检查脚本更新
 check_script_update() {
     echo ""
@@ -1428,13 +1682,14 @@ main_menu() {
         echo "5) 👥 FTP用户管理"
         echo "6) 🧪 实时性测试"
         echo "7) 🔗 挂载文件映射"
-        echo "8) 🔄 检查脚本更新"
-        echo "9) 🗑️ 卸载FTP服务"
+        echo "8) 🔒 权限管理 (只读/删除权限)"
+        echo "9) 🔄 检查脚本更新"
+        echo "10) 🗑️ 卸载FTP服务"
         echo "0) 退出"
         echo ""
         echo "📝 快捷键： Ctrl+C 快速退出"
         echo ""
-        read -p "请输入选项 (0-9): " choice
+        read -p "请输入选项 (0-10): " choice
         
         case $choice in
             1)
@@ -1469,10 +1724,13 @@ main_menu() {
                 read -p "按回车键返回主菜单..." -r
                 ;;
             8)
+                permission_management_menu
+                ;;
+            9)
                 check_script_update
                 read -p "按回车键返回主菜单..." -r
                 ;;
-            9)
+            10)
                 uninstall_ftp_service
                 read -p "按回车键返回主菜单..." -r
                 ;;
