@@ -8,7 +8,7 @@
 set -o pipefail
 
 # 全局配置
-readonly SCRIPT_VERSION="v1.1.0"
+readonly SCRIPT_VERSION="v1.1.2"
 readonly LOG_FILE="/var/log/brce_ftp_lite.log"
 SOURCE_DIR="/opt/brec/file"
 FTP_USER=""
@@ -1381,25 +1381,95 @@ permission_management_menu() {
     case $perm_choice in
         1)
             set_readonly_permissions
+            if [[ $? -eq 0 ]]; then
+                echo ""
+                echo "✅ 权限模式切换完成！"
+                echo "📋 当前权限状态："
+                show_current_permission_status
+                echo ""
+                read -p "按回车键返回主菜单..." -r
+            fi
             ;;
         2)
             set_delete_permissions
+            if [[ $? -eq 0 ]]; then
+                echo ""
+                echo "✅ 权限模式切换完成！"
+                echo "📋 当前权限状态："
+                show_current_permission_status
+                echo ""
+                read -p "按回车键返回主菜单..." -r
+            fi
             ;;
         3)
             set_readwrite_permissions
+            if [[ $? -eq 0 ]]; then
+                echo ""
+                echo "✅ 权限模式切换完成！"
+                echo "📋 当前权限状态："
+                show_current_permission_status
+                echo ""
+                read -p "按回车键返回主菜单..." -r
+            fi
             ;;
         4)
             show_permission_details
+            echo ""
+            read -p "按回车键返回主菜单..." -r
             ;;
         0)
             return 0
             ;;
         *)
             echo "❌ 无效选项"
+            sleep 1
             ;;
     esac
     
     return 0
+}
+
+# 显示当前权限状态
+show_current_permission_status() {
+    local ftp_home="/home/$FTP_USER/ftp"
+    
+    echo "   用户: $FTP_USER"
+    echo "   源目录: $SOURCE_DIR"
+    echo "   FTP目录: $ftp_home"
+    
+    # 检查挂载状态
+    if mountpoint -q "$ftp_home" 2>/dev/null; then
+        local mount_info=$(mount | grep "$ftp_home" | head -1)
+        if echo "$mount_info" | grep -q "ro,"; then
+            echo "   挂载状态: ✅ 只读挂载"
+        else
+            echo "   挂载状态: ⚠️  读写挂载"
+        fi
+    else
+        echo "   挂载状态: ❌ 未挂载"
+    fi
+    
+    # 检查目录权限
+    if [[ -d "$SOURCE_DIR" ]]; then
+        local dir_perms=$(stat -c %a "$SOURCE_DIR" 2>/dev/null)
+        echo "   目录权限: $dir_perms"
+        
+        # 检查文件权限
+        local test_file=$(find "$SOURCE_DIR" -type f 2>/dev/null | head -1)
+        if [[ -n "$test_file" ]]; then
+            local file_perm=$(stat -c %a "$test_file" 2>/dev/null)
+            echo "   文件权限: $file_perm"
+            
+            # 根据权限判断模式
+            if [[ "$file_perm" == "444" ]]; then
+                echo "   权限模式: 🔒 只读模式"
+            elif [[ "$file_perm" == "644" ]]; then
+                echo "   权限模式: ✏️ 读写模式"
+            else
+                echo "   权限模式: ❓ 未知模式"
+            fi
+        fi
+    fi
 }
 
 # 设置只读权限
@@ -1423,6 +1493,7 @@ set_readonly_permissions() {
         echo "   • 文件不可修改"
         echo "   • 文件不可删除"
         echo "   • 保护录播文件安全"
+        echo "   • 挂载方式: bind mount (只读)"
     else
         echo "❌ 只读权限设置失败"
         return 1
@@ -1466,6 +1537,7 @@ set_delete_permissions() {
         echo "   • 文件可删除"
         echo "   • 文件不可修改"
         echo "   • 目录可删除"
+        echo "   • 挂载方式: bind mount (读写)"
     else
         echo "❌ 删除权限设置失败"
         return 1
@@ -1510,6 +1582,7 @@ set_readwrite_permissions() {
         echo "   • 文件可修改"
         echo "   • 文件可删除"
         echo "   • 目录可修改"
+        echo "   • 挂载方式: bind mount (读写)"
         echo "⚠️  请谨慎使用此模式"
     else
         echo "❌ 读写权限设置失败"
@@ -1619,12 +1692,28 @@ check_script_update() {
         return 0
     fi
     
+    # 统计代码行数
+    local current_lines=$(wc -l < "$script_name" 2>/dev/null || echo "0")
+    local remote_lines=$(wc -l < "$temp_file" 2>/dev/null || echo "0")
+    local line_diff=$((remote_lines - current_lines))
+    
     echo ""
     echo "🆕 发现新版本: $remote_version"
+    echo "📊 代码统计："
+    echo "   当前版本行数: $current_lines"
+    echo "   远程版本行数: $remote_lines"
+    if [[ $line_diff -gt 0 ]]; then
+        echo "   新增代码行数: +$line_diff"
+    elif [[ $line_diff -lt 0 ]]; then
+        echo "   减少代码行数: $line_diff"
+    else
+        echo "   代码行数无变化"
+    fi
+    echo ""
     echo "💡 更新内容："
-    echo "   • 修复端口检查功能"
-    echo "   • 添加脚本自动更新"
-    echo "   • 改进错误处理"
+    echo "   • 移除脚本更新备份功能"
+    echo "   • 添加代码行数统计对比"
+    echo "   • 优化更新信息显示"
     echo ""
     
     read -p "是否更新到最新版本？(y/n，默认 y): " update_confirm
@@ -1632,11 +1721,6 @@ check_script_update() {
     
     if [[ "$update_confirm" == "y" ]]; then
         echo "🔄 正在更新脚本..."
-        
-        # 备份当前脚本
-        local backup_file="$script_name.backup.$(date +%Y%m%d_%H%M%S)"
-        cp "$script_name" "$backup_file"
-        echo "✅ 当前脚本已备份: $backup_file"
         
         # 替换脚本
         if cp "$temp_file" "$script_name"; then
