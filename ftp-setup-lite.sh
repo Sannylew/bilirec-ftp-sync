@@ -12,6 +12,7 @@ readonly SCRIPT_VERSION="v1.0.1"
 readonly LOG_FILE="/var/log/brce_ftp_lite.log"
 SOURCE_DIR="/opt/brec/file"
 FTP_USER=""
+FTP_PASSWORD=""
 
 # 日志函数
 log_info() {
@@ -316,6 +317,9 @@ create_ftp_user() {
     echo "   🌐 端口: 21"
     echo "======================================================"
     echo ""
+    
+    # 保存密码到全局变量用于显示
+    FTP_PASSWORD="$ftp_password"
     
     return 0
 }
@@ -653,7 +657,11 @@ check_service_status() {
     echo "📝 连接信息："
     echo "   🌐 服务器: $(hostname -I | awk '{print $1}')"
     echo "   👤 用户名: $FTP_USER"
-    echo "   🔑 密码: [已设置]"
+    if [[ -n "$FTP_PASSWORD" ]]; then
+        echo "   🔑 密码: $FTP_PASSWORD"
+    else
+        echo "   🔑 密码: [已设置]"
+    fi
     echo "   📁 目录: $SOURCE_DIR"
     echo "   🌐 端口: 21"
     echo "   🔌 被动端口: 40000-40100"
